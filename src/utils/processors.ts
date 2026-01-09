@@ -5,8 +5,6 @@ import { parseWlnContent, type WlnRecord } from './wlnParser';
 const formatUnixDate = (timestamp: any) => {
     if (!timestamp || timestamp == 0) return '-';
     try {
-        // Multiplica por 1000 se o timestamp vier em segundos (comum em rastreadores)
-        // Se já vier em ms, remova a multiplicação
         const timeVal = String(timestamp).length > 11 ? Number(timestamp) : Number(timestamp) * 1000;
         return new Date(timeVal).toLocaleString('pt-BR');
     } catch (e) {
@@ -19,7 +17,7 @@ const calculateVolume = (final: any, start: any) => {
     return isNaN(vol) ? 0 : Number(vol.toFixed(2));
 };
 
-// --- FUNÇÃO 1: PROCESSADOR EXCLUSIVO WLN (Lê o arquivo direto) ---
+// --- FUNÇÃO 1: PROCESSADOR EXCLUSIVO WLN ---
 export const processWlnFile = (file: File): Promise<WlnRecord[]> => {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -42,24 +40,19 @@ export const processWlnFile = (file: File): Promise<WlnRecord[]> => {
     });
 };
 
-
-// --- FUNÇÃO 2: PROCESSADOR GERAL (Recebe dados já lidos pelo PapaParse) ---
-// Usado para: Normal, Travado, Erro, Suntech, etc.
+// --- FUNÇÃO 2: PROCESSADOR GERAL ---
 export const processLogFile = (data: any[], mode: string, extraParams: any = {}) => {
     switch (mode) {
         case 'normal':
             return processNormalSupply(data);
         case 'travado':
-            // Passamos o ID inicial que o usuário digitou
             return processLockedID(data, extraParams.startId || 0);
         case 'erro':
             return processFrameError(data);
-        // Adicione aqui outros casos (ex: case 'suntech': return processSuntech(data))
         default:
-            return data; // Retorna os dados brutos se não houver processamento específico
+            return data;
     }
 };
-
 
 // --- SUB-FUNÇÕES DE LÓGICA DE NEGÓCIO ---
 
@@ -76,7 +69,12 @@ const processNormalSupply = (data: any[]) => {
             if (vol > 0.5 && !processedSignatures.has(signature)) {
                 processedSignatures.add(signature);
 
+                // Normaliza o timestamp para Milissegundos (igual ao formatUnixDate)
+                const rawTs = Number(row.upar3);
+                const timeMs = String(rawTs).length > 11 ? rawTs : rawTs * 1000;
+
                 result.push({
+                    'originalTimestamp': timeMs, // <--- 1. ADICIONADO AQUI
                     'Data': formatUnixDate(row.upar3),
                     'ID Operação': row.upar0,
                     'Veículo (Cartão)': row.upar1,
@@ -114,7 +112,12 @@ const processLockedID = (data: any[], startIdInput: number) => {
     return uniqueSupplies.map(item => {
         currentIdCounter++;
 
+        // Normaliza o timestamp para Milissegundos
+        const rawTs = Number(item.row.upar3);
+        const timeMs = String(rawTs).length > 11 ? rawTs : rawTs * 1000;
+
         return {
+            'originalTimestamp': timeMs, // <--- 2. ADICIONADO AQUI
             'ID Gerado (Corrigido)': currentIdCounter,
             'ID Original (Travado)': item.row.upar0,
             'Data Inicial': formatUnixDate(item.row.upar3),
@@ -128,6 +131,41 @@ const processLockedID = (data: any[], startIdInput: number) => {
     });
 };
 
+// --- Formatador para Exportação Excel ---
+export const formatForExcel = (data: any[]) => {
+    return data.map((item) => {
+        let dateObj = new Date();
+
+        // Agora ele vai encontrar o valor que adicionamos acima
+        if (item.originalTimestamp) {
+            dateObj = new Date(item.originalTimestamp);
+        }
+
+        const dia = String(dateObj.getDate()).padStart(2, '0');
+        const mes = String(dateObj.getMonth() + 1).padStart(2, '0');
+        const ano = dateObj.getFullYear();
+
+        const hora = String(dateObj.getHours()).padStart(2, '0');
+        const min = String(dateObj.getMinutes()).padStart(2, '0');
+
+        const medidor = item['Encerrante Final'] || 0;
+
+        const volume = typeof item['Volume (L)'] === 'number'
+            ? item['Volume (L)']
+            : parseFloat(item['Volume (L)']);
+
+        return {
+            'Data': `${dia}/${mes}/${ano}`,
+            'Hora': `${hora}:${min}`,
+            'Bomba': 'S10',
+            'Medidor': medidor,
+            'Quantidade': volume,
+            'Hodômetro': item['Odômetro'] !== '-' ? item['Odômetro'] : '',
+            'Veículo': item['Veículo (Cartão)'] || item['Veículo'] || ''
+        };
+    });
+};
+
 // 3. LÓGICA: IDENTIFICADOR DE ERRO
 const processFrameError = (data: any[]) => {
     const result: any[] = [];
@@ -135,18 +173,15 @@ const processFrameError = (data: any[]) => {
     data.forEach((row, index) => {
         let errosEncontrados = [];
 
-        // Check 1: Energia
         const pwrExt = Number(row.pwr_ext);
         const pwrInt = Number(row.pwr_int);
 
         if (row.pwr_ext && pwrExt < 10) errosEncontrados.push(`Tensão Ext Baixa (${pwrExt}V)`);
         if (row.pwr_int && pwrInt < 2) errosEncontrados.push(`Bateria Int Baixa (${pwrInt}V)`);
 
-        // Check 2: Encerrantes Zerados
         if (row.upar4 == 0) errosEncontrados.push("Encerrante Inicial Zerado (upar4=0)");
         if (row.upar6 == 0) errosEncontrados.push("Encerrante Final Zerado (upar6=0)");
 
-        // Check 3: Evolução
         const encInicial = Number(row.upar4);
         const encFinal = Number(row.upar6);
 

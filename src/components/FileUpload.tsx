@@ -12,9 +12,13 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect }) => {
     const handleDrag = (e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
+
+        // Log para garantir que o drag está sendo detectado
         if (e.type === 'dragenter' || e.type === 'dragover') {
+            if (!isDragging) console.log('[FileUpload] Drag Enter/Over detectado');
             setIsDragging(true);
         } else if (e.type === 'dragleave') {
+            console.log('[FileUpload] Drag Leave detectado');
             setIsDragging(false);
         }
     };
@@ -24,14 +28,43 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect }) => {
         e.stopPropagation();
         setIsDragging(false);
 
-        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-            onFileSelect(e.dataTransfer.files[0]);
+        console.log('[FileUpload] Evento DROP disparado.');
+
+        // Verifica o objeto dataTransfer completo
+        console.log('[FileUpload] dataTransfer:', e.dataTransfer);
+
+        // Verifica a lista de arquivos
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            const file = e.dataTransfer.files[0];
+            console.log('[FileUpload] Arquivo recebido via DROP:', {
+                nome: file.name,
+                tipo: file.type || 'NÃO DETECTADO (Comum para .wln)',
+                tamanho: file.size,
+                extensao: file.name.split('.').pop()
+            });
+
+            onFileSelect(file);
+        } else {
+            console.warn('[FileUpload] Evento DROP ocorreu, mas nenhum arquivo foi encontrado em e.dataTransfer.files.');
         }
     };
 
     const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        console.log('[FileUpload] Evento CHANGE do input (seleção manual) disparado.');
+
         if (e.target.files && e.target.files[0]) {
-            onFileSelect(e.target.files[0]);
+            const file = e.target.files[0];
+
+            console.log('[FileUpload] Arquivo selecionado via INPUT:', {
+                nome: file.name,
+                tipo: file.type || 'NÃO DETECTADO (Comum para .wln)',
+                tamanho: file.size,
+                extensao: file.name.split('.').pop()
+            });
+
+            onFileSelect(file);
+        } else {
+            console.warn('[FileUpload] Evento CHANGE disparado, mas e.target.files está vazio.');
         }
     };
 
@@ -51,14 +84,18 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect }) => {
                 : 'border-gray-200 hover:border-blue-400 hover:bg-gray-50'
             }
       `}
-            onClick={() => inputRef.current?.click()}
+            onClick={() => {
+                console.log('[FileUpload] Clicou na área de upload, abrindo explorador de arquivos...');
+                inputRef.current?.click();
+            }}
         >
             <input
                 ref={inputRef}
                 type="file"
                 className="hidden"
-                // ADICIONADO: .wln na lista de aceitos
-                accept=".csv,.txt,.xlsx,.wln"
+                // DICA: Às vezes o navegador é estrito com extensões.
+                // Adicionei '*' como fallback caso o sistema operacional não reconheça .wln
+                accept=".csv,.txt,.xlsx,.wln,*"
                 onChange={handleChange}
             />
 

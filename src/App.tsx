@@ -4,8 +4,8 @@ import * as XLSX from 'xlsx';
 import { toast, Toaster } from 'sonner';
 import { ArrowLeft, Download, FileSpreadsheet, Settings } from 'lucide-react';
 
-// Importe suas funções
-import { processLogFile, processWlnFile } from './utils/processors';
+// Importação ÚNICA e correta das funções
+import { processLogFile, processWlnFile, formatForExcel } from './utils/processors';
 
 // Importe seus componentes
 import { ModeSelector } from './components/ModeSelector';
@@ -17,20 +17,39 @@ function App() {
     const [isProcessing, setIsProcessing] = useState(false);
     const [startIdInput, setStartIdInput] = useState<string>("");
 
+    // --- FUNÇÃO DE DOWNLOAD ATUALIZADA (Única versão) ---
     const handleDownload = () => {
         if (processedData.length === 0) return;
+
+        // 1. Formata os dados para o padrão exato do Excel do cliente
+        const excelData = formatForExcel(processedData);
+
+        // 2. Cria a planilha
         const wb = XLSX.utils.book_new();
-        const ws = XLSX.utils.json_to_sheet(processedData);
+        const ws = XLSX.utils.json_to_sheet(excelData);
+
+        // Ajuste de largura das colunas para ficar bonito
+        const wscols = [
+            { wch: 12 }, // Data
+            { wch: 8 },  // Hora
+            { wch: 10 }, // Bomba
+            { wch: 15 }, // Medidor
+            { wch: 12 }, // Quantidade
+            { wch: 12 }, // Hodômetro
+            { wch: 20 }  // Veículo
+        ];
+        ws['!cols'] = wscols;
+
         XLSX.utils.book_append_sheet(wb, ws, "Relatorio");
-        XLSX.writeFile(wb, `Relatorio_${currentMode}_${new Date().toISOString().slice(0, 10)}.xlsx`);
-        toast.success("Download iniciado!");
+        XLSX.writeFile(wb, `Abastecimentos_S10_${new Date().toISOString().slice(0, 10)}.xlsx`);
+        toast.success("Download iniciado com formato padronizado!");
     };
 
     const handleFileSelect = async (file: File) => {
         setIsProcessing(true);
         setProcessedData([]);
 
-        // 1. Validação Específica para o modo "Travado"
+        // Validação Específica para o modo "Travado"
         if (currentMode === 'travado' && !startIdInput) {
             toast.error("Por favor, digite o Último ID Válido antes de enviar o arquivo.");
             setIsProcessing(false);
@@ -38,34 +57,60 @@ function App() {
         }
 
         try {
-            // === CENÁRIO A: Arquivo WLN (Lógica Nova) ===
-            if (currentMode === 'wln') {
+            // DETECÇÃO AUTOMÁTICA: Verifica se é arquivo WLN pela extensão
+            const isWlnFile = file.name.toLowerCase().endsWith('.wln');
+
+            // === CENÁRIO A: Arquivo WLN (Força o uso do parser WLN se a extensão bater) ===
+            if (currentMode === 'wln' || isWlnFile) {
+                console.log("Arquivo WLN detectado. Usando processador específico...");
+
+                // Se o usuário estiver no modo Normal mas subiu um WLN, avisamos
+                if (currentMode !== 'wln') {
+                    toast.info("Arquivo .WLN detectado! Usando leitor compatível automaticamente.");
+                }
+
                 const data = await processWlnFile(file);
 
                 if (data.length > 0) {
-                    setProcessedData(data);
-                    toast.success(`WLN processado! ${data.length} registros.`);
+                    // Se estiver no modo WLN, mostra tudo.
+                    // Se estiver no modo Normal, tentamos processar (embora WLN geralmente não tenha dados de bomba)
+                    if (currentMode === 'normal') {
+                        // Tenta extrair dados de abastecimento se houver (upar4/upar6 dentro do WLN)
+                        const cleanData = processLogFile(data, 'normal');
+                        if (cleanData.length > 0) {
+                            setProcessedData(cleanData);
+                            toast.success(`Abastecimentos extraídos do WLN: ${cleanData.length}`);
+                        } else {
+                            // Fallback: Se não achou abastecimento, mostra os dados brutos do WLN
+                            setProcessedData(data);
+                            toast.warning("Arquivo lido, mas não contém dados de abastecimento (Bomba). Mostrando dados brutos.");
+                        }
+                    } else {
+                        setProcessedData(data);
+                        toast.success(`WLN processado! ${data.length} registros.`);
+                    }
                 } else {
                     toast.warning("Nenhum registro encontrado no arquivo WLN.");
                 }
                 setIsProcessing(false);
             }
 
-            // === CENÁRIO B: Arquivos CSV/TXT Padrão (Lógica Antiga com PapaParse) ===
+            // === CENÁRIO B: Arquivos CSV/TXT Padrão (Suntech/Exportações) ===
             else {
+                console.log("Arquivo Padrão detectado. Usando PapaParse...");
+
                 Papa.parse(file, {
                     header: true,
                     skipEmptyLines: true,
+                    delimiter: ";",
                     transformHeader: (header: string) => header.trim(),
                     complete: (results: any) => {
                         if (!currentMode) return;
 
-                        // Verifica colunas
                         if (results.meta && results.meta.fields && results.meta.fields.length < 2) {
                             console.warn("Atenção: O arquivo parece ter poucas colunas.");
                         }
 
-                        // Chama o processador antigo
                         const cleanData = processLogFile(results.data, currentMode, {
                             startId: Number(startIdInput)
                         });
@@ -76,7 +121,7 @@ function App() {
                         if (cleanData.length > 0) {
                             toast.success(`${cleanData.length} registros processados!`);
                         } else {
-                            toast.warning("Nenhum registro encontrado. Verifique o separador.");
+                            toast.warning("Nenhum registro válido encontrado. Verifique se o arquivo corresponde ao modo selecionado.");
                         }
                     },
                     error: (err: any) => {
