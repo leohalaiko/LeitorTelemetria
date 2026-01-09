@@ -131,40 +131,48 @@ const processLockedID = (data: any[], startIdInput: number) => {
     });
 };
 
-// --- Formatador para Exportação Excel ---
+// --- Helper para preparar os dados para o App.tsx ---
 export const formatForExcel = (data: any[]) => {
-    return data.map((item) => {
-        let dateObj = new Date();
+    // 1. Ordena cronologicamente
+    const sortedData = [...data].sort((a, b) => {
+        const timeA = a.originalTimestamp || 0;
+        const timeB = b.originalTimestamp || 0;
+        return timeA - timeB;
+    });
 
-        // Agora ele vai encontrar o valor que adicionamos acima
+    // 2. Retorna os dados normalizados com o AJUSTE DO "0" EXTRA
+    return sortedData.map((item) => {
+        let dateObj = new Date();
         if (item.originalTimestamp) {
             dateObj = new Date(item.originalTimestamp);
         }
 
-        const dia = String(dateObj.getDate()).padStart(2, '0');
-        const mes = String(dateObj.getMonth() + 1).padStart(2, '0');
-        const ano = dateObj.getFullYear();
+        const horaInicio = dateObj.toLocaleTimeString('pt-BR', { hour12: false });
 
-        const hora = String(dateObj.getHours()).padStart(2, '0');
-        const min = String(dateObj.getMinutes()).padStart(2, '0');
+        const horaFim = item['Data Final']
+            ? new Date(item['Data Final']).toLocaleTimeString('pt-BR', { hour12: false })
+            : horaInicio;
 
-        const medidor = item['Encerrante Final'] || 0;
-
-        const volume = typeof item['Volume (L)'] === 'number'
-            ? item['Volume (L)']
-            : parseFloat(item['Volume (L)']);
+        // AJUSTE SOLICITADO: Multiplicar por 10 para adicionar a casa decimal "0"
+        const encInicial = Number(item['Encerrante Inicial'] || 0);
+        const encFinal = Number(item['Encerrante Final'] || 0);
 
         return {
-            'Data': `${dia}/${mes}/${ano}`,
-            'Hora': `${hora}:${min}`,
-            'Bomba': 'S10',
-            'Medidor': medidor,
-            'Quantidade': volume,
-            'Hodômetro': item['Odômetro'] !== '-' ? item['Odômetro'] : '',
-            'Veículo': item['Veículo (Cartão)'] || item['Veículo'] || ''
+            raw: item,
+            bomba: 'S10',
+            horaInicio: horaInicio,
+            horaFim: horaFim,
+            medidorInicial: encInicial * 10, // <--- Adiciona o "0"
+            medidorFinal: encFinal * 10,     // <--- Adiciona o "0"
+            placa: item['Veículo (Cartão)'] || item['Veículo'] || '',
+            id: item['ID Operação'] || item['ID Original (Travado)'] || '',
+            frentista: item['Frentista'] || '',
+            odometro: item['Odômetro'] !== '-' ? Number(item['Odômetro']) : ''
         };
     });
 };
+
+
 
 // 3. LÓGICA: IDENTIFICADOR DE ERRO
 const processFrameError = (data: any[]) => {

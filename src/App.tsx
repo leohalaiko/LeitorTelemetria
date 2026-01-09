@@ -2,9 +2,9 @@ import { useState } from 'react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { toast, Toaster } from 'sonner';
-import { ArrowLeft, Download, FileSpreadsheet, Settings } from 'lucide-react';
+import { ArrowLeft, Download, FileSpreadsheet, Settings, X } from 'lucide-react';
 
-// Importação ÚNICA e correta das funções
+// Importação das funções
 import { processLogFile, processWlnFile, formatForExcel } from './utils/processors';
 
 // Importe seus componentes
@@ -17,39 +17,149 @@ function App() {
     const [isProcessing, setIsProcessing] = useState(false);
     const [startIdInput, setStartIdInput] = useState<string>("");
 
-    // --- FUNÇÃO DE DOWNLOAD ATUALIZADA (Única versão) ---
-    const handleDownload = () => {
-        if (processedData.length === 0) return;
+    // ESTADOS PARA O MODAL
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [pumpName, setPumpName] = useState("");
 
-        // 1. Formata os dados para o padrão exato do Excel do cliente
-        const excelData = formatForExcel(processedData);
+    // --- 1. FUNÇÃO DE CRIAÇÃO DA PLANILHA (Blindada) ---
+    const createWorkbook = (nomeBombaBruto: string) => {
+        const cleanData = formatForExcel(processedData);
+        if (cleanData.length === 0) return null;
 
-        // 2. Cria a planilha
-        const wb = XLSX.utils.book_new();
-        const ws = XLSX.utils.json_to_sheet(excelData);
+        // PROTEÇÃO 1: Remove espaços extras do começo/fim
+        const nomeBomba = nomeBombaBruto.trim();
 
-        // Ajuste de largura das colunas para ficar bonito
-        const wscols = [
-            { wch: 12 }, // Data
-            { wch: 8 },  // Hora
-            { wch: 10 }, // Bomba
-            { wch: 15 }, // Medidor
-            { wch: 12 }, // Quantidade
-            { wch: 12 }, // Hodômetro
-            { wch: 20 }  // Veículo
+        // Cabeçalhos (Linha 1)
+        const headers = [
+            "Bomba", "Hora Inicio", "Hora Fim", "Medidor",
+            "Encerrante inicial m³", "Encerrante Inicial", "Encerrante Final",
+            "Litros", "Placa", "0,00001", "ID", "Frentista", "Odometro"
         ];
-        ws['!cols'] = wscols;
 
-        XLSX.utils.book_append_sheet(wb, ws, "Relatorio");
-        XLSX.writeFile(wb, `Abastecimentos_S10_${new Date().toISOString().slice(0, 10)}.xlsx`);
-        toast.success("Download iniciado com formato padronizado!");
+        const sheetData: any[][] = [];
+        sheetData.push(headers);
+
+        // --- LINHA 2: CONFIGURAÇÃO INICIAL ---
+        const primeiroRegistro = cleanData[0];
+        const medidorInicialDia = primeiroRegistro.medidorInicial;
+        const m3Inicial = medidorInicialDia / 100000;
+
+        // PROTEÇÃO 2: Preencher o nome da bomba também na linha 2 (Setup)
+        // Alguns sistemas exigem que a coluna A esteja preenchida em todas as linhas
+        const row2 = [
+            nomeBomba,          // A (Preenchido para garantir vínculo)
+            "",                 // B
+            "",                 // C
+            medidorInicialDia,  // D
+            m3Inicial,          // E
+            "", "", "", "", "", "", "", ""
+        ];
+        sheetData.push(row2);
+
+        // --- LINHAS 3+: DADOS ---
+        cleanData.forEach((item) => {
+            const row = [
+                nomeBomba,          // A
+                item.horaInicio,    // B
+                item.horaFim,       // C
+                item.medidorFinal,  // D
+                "",                 // E
+                null, null, null,   // F, G, H (Fórmulas)
+                item.placa,         // I
+                "",                 // J
+                item.id,            // K
+                item.frentista,     // L
+                item.odometro       // M
+            ];
+            sheetData.push(row);
+        });
+
+        const ws = XLSX.utils.aoa_to_sheet(sheetData);
+
+        // INJEÇÃO DE FÓRMULAS
+        for (let i = 2; i < sheetData.length; i++) {
+            const linhaExcel = i + 1;
+            const linhaAnterior = linhaExcel - 1;
+
+            const cellF = XLSX.utils.encode_cell({ r: i, c: 5 });
+            ws[cellF] = { t: 'n', f: `D${linhaAnterior}`, v: 0 };
+
+            const cellG = XLSX.utils.encode_cell({ r: i, c: 6 });
+            ws[cellG] = { t: 'n', f: `D${linhaExcel}`, v: 0 };
+
+            const cellH = XLSX.utils.encode_cell({ r: i, c: 7 });
+            ws[cellH] = { t: 'n', f: `(G${linhaExcel}-F${linhaExcel})*0.01`, v: 0 };
+        }
+
+        ws['!cols'] = [
+            { wch: 30 }, { wch: 12 }, { wch: 12 }, { wch: 15 },
+            { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 10 },
+            { wch: 12 }, { wch: 10 }, { wch: 15 }, { wch: 20 }, { wch: 10 }
+        ];
+
+        // --- PROTEÇÃO 3: NOME DA ABA (DATA) ---
+        // Garante que SEMPRE haverá uma data no nome da aba
+        let nomeDaAba = "";
+
+        if (processedData.length > 0 && processedData[0].originalTimestamp) {
+            const dataObj = new Date(processedData[0].originalTimestamp);
+            const dia = String(dataObj.getDate()).padStart(2, '0');
+            const mes = String(dataObj.getMonth() + 1).padStart(2, '0');
+            const ano = dataObj.getFullYear();
+            nomeDaAba = `${dia}.${mes}.${ano}`;
+        } else {
+            // Fallback: Se não achar data no arquivo, usa HOJE
+            const dataHoje = new Date();
+            const dia = String(dataHoje.getDate()).padStart(2, '0');
+            const mes = String(dataHoje.getMonth() + 1).padStart(2, '0');
+            const ano = dataHoje.getFullYear();
+            nomeDaAba = `${dia}.${mes}.${ano}`;
+        }
+
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, nomeDaAba);
+
+        return wb;
+    };
+
+    const handleDownloadClick = () => {
+        if (processedData.length === 0) return;
+        setPumpName("");
+        setIsModalOpen(true);
+    };
+
+    const confirmDownload = () => {
+        if (!pumpName.trim()) {
+            toast.error("Por favor, digite o nome da bomba.");
+            return;
+        }
+
+        const wb = createWorkbook(pumpName);
+        if (!wb) return;
+
+        // Gera nome do arquivo
+        let nomeArquivo = "Relatorio.xlsx";
+        if (processedData.length > 0 && processedData[0].originalTimestamp) {
+            const dataObj = new Date(processedData[0].originalTimestamp);
+            const dia = String(dataObj.getDate()).padStart(2, '0');
+            const mes = String(dataObj.getMonth() + 1).padStart(2, '0');
+            const ano = dataObj.getFullYear();
+            nomeArquivo = `Planilha insercao de abastecimento_S10_${dia}.${mes}.${ano}.xlsx`;
+        } else {
+            // Fallback nome do arquivo
+            const d = new Date();
+            nomeArquivo = `Planilha insercao de abastecimento_S10_${d.getDate()}.${d.getMonth()+1}.${d.getFullYear()}.xlsx`;
+        }
+
+        XLSX.writeFile(wb, nomeArquivo);
+        toast.success(`Planilha gerada para: ${pumpName}`);
+        setIsModalOpen(false);
     };
 
     const handleFileSelect = async (file: File) => {
         setIsProcessing(true);
         setProcessedData([]);
 
-        // Validação Específica para o modo "Travado"
         if (currentMode === 'travado' && !startIdInput) {
             toast.error("Por favor, digite o Último ID Válido antes de enviar o arquivo.");
             setIsProcessing(false);
@@ -57,48 +167,35 @@ function App() {
         }
 
         try {
-            // DETECÇÃO AUTOMÁTICA: Verifica se é arquivo WLN pela extensão
             const isWlnFile = file.name.toLowerCase().endsWith('.wln');
 
-            // === CENÁRIO A: Arquivo WLN (Força o uso do parser WLN se a extensão bater) ===
             if (currentMode === 'wln' || isWlnFile) {
-                console.log("Arquivo WLN detectado. Usando processador específico...");
-
-                // Se o usuário estiver no modo Normal mas subiu um WLN, avisamos
                 if (currentMode !== 'wln') {
-                    toast.info("Arquivo .WLN detectado! Usando leitor compatível automaticamente.");
+                    toast.info("Arquivo .WLN detectado! Usando leitor compatível.");
                 }
 
                 const data = await processWlnFile(file);
 
                 if (data.length > 0) {
-                    // Se estiver no modo WLN, mostra tudo.
-                    // Se estiver no modo Normal, tentamos processar (embora WLN geralmente não tenha dados de bomba)
                     if (currentMode === 'normal') {
-                        // Tenta extrair dados de abastecimento se houver (upar4/upar6 dentro do WLN)
                         const cleanData = processLogFile(data, 'normal');
                         if (cleanData.length > 0) {
                             setProcessedData(cleanData);
-                            toast.success(`Abastecimentos extraídos do WLN: ${cleanData.length}`);
+                            toast.success(`Abastecimentos extraídos: ${cleanData.length}`);
                         } else {
-                            // Fallback: Se não achou abastecimento, mostra os dados brutos do WLN
                             setProcessedData(data);
-                            toast.warning("Arquivo lido, mas não contém dados de abastecimento (Bomba). Mostrando dados brutos.");
+                            toast.warning("Atenção: Não foram encontrados dados de bomba (upar4/upar6).");
                         }
                     } else {
                         setProcessedData(data);
-                        toast.success(`WLN processado! ${data.length} registros.`);
+                        toast.success(`${data.length} registros carregados.`);
                     }
                 } else {
-                    toast.warning("Nenhum registro encontrado no arquivo WLN.");
+                    toast.warning("Arquivo WLN vazio ou inválido.");
                 }
                 setIsProcessing(false);
             }
-
-            // === CENÁRIO B: Arquivos CSV/TXT Padrão (Suntech/Exportações) ===
             else {
-                console.log("Arquivo Padrão detectado. Usando PapaParse...");
-
                 Papa.parse(file, {
                     header: true,
                     skipEmptyLines: true,
@@ -106,23 +203,12 @@ function App() {
                     transformHeader: (header: string) => header.trim(),
                     complete: (results: any) => {
                         if (!currentMode) return;
-
-                        if (results.meta && results.meta.fields && results.meta.fields.length < 2) {
-                            console.warn("Atenção: O arquivo parece ter poucas colunas.");
-                        }
-
                         const cleanData = processLogFile(results.data, currentMode, {
                             startId: Number(startIdInput)
                         });
-
                         setProcessedData(cleanData);
                         setIsProcessing(false);
-
-                        if (cleanData.length > 0) {
-                            toast.success(`${cleanData.length} registros processados!`);
-                        } else {
-                            toast.warning("Nenhum registro válido encontrado. Verifique se o arquivo corresponde ao modo selecionado.");
-                        }
+                        if (cleanData.length > 0) toast.success(`${cleanData.length} registros.`);
                     },
                     error: (err: any) => {
                         toast.error("Erro ao ler arquivo: " + err.message);
@@ -133,7 +219,7 @@ function App() {
 
         } catch (error) {
             console.error(error);
-            toast.error("Erro crítico ao processar arquivo.");
+            toast.error("Erro crítico ao processar.");
             setIsProcessing(false);
         }
     };
@@ -168,7 +254,7 @@ function App() {
                             Voltar para seleção
                         </button>
 
-                        <div className="bg-white rounded-3xl shadow-xl p-8 border border-gray-100">
+                        <div className="bg-white rounded-3xl shadow-xl p-8 border border-gray-100 relative">
 
                             {currentMode === 'travado' && (
                                 <div className="mb-8 p-6 bg-purple-50 rounded-2xl border border-purple-100 flex flex-col md:flex-row items-center gap-4">
@@ -212,8 +298,9 @@ function App() {
                                                 <p className="text-sm text-green-700">{processedData.length} registros gerados.</p>
                                             </div>
                                         </div>
+
                                         <button
-                                            onClick={handleDownload}
+                                            onClick={handleDownloadClick}
                                             className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl font-bold flex items-center shadow-lg hover:shadow-green-200 transition-all active:scale-95"
                                         >
                                             <Download className="w-5 h-5 mr-2" />
@@ -225,24 +312,81 @@ function App() {
                                         <table className="w-full text-sm text-left">
                                             <thead className="bg-gray-50 text-gray-500 font-medium">
                                             <tr>
-                                                {Object.keys(processedData[0]).map(header => (
-                                                    <th key={header} className="px-4 py-3 whitespace-nowrap">{header}</th>
-                                                ))}
+                                                <th className="px-4 py-3">Data</th>
+                                                <th className="px-4 py-3">ID</th>
+                                                <th className="px-4 py-3">Vol (L)</th>
+                                                <th className="px-4 py-3">Enc. Inicial</th>
+                                                <th className="px-4 py-3">Enc. Final</th>
                                             </tr>
                                             </thead>
                                             <tbody>
                                             {processedData.slice(0, 5).map((row, i) => (
                                                 <tr key={i} className="border-t border-gray-50 hover:bg-gray-50">
-                                                    {Object.values(row).map((val: any, idx) => (
-                                                        <td key={idx} className="px-4 py-3 whitespace-nowrap">{val}</td>
-                                                    ))}
+                                                    <td className="px-4 py-3">{row['Data'] || '-'}</td>
+                                                    <td className="px-4 py-3">{row['ID Operação'] || row['ID Original (Travado)'] || '-'}</td>
+                                                    <td className="px-4 py-3">{row['Volume (L)']}</td>
+                                                    <td className="px-4 py-3">{row['Encerrante Inicial']}</td>
+                                                    <td className="px-4 py-3">{row['Encerrante Final']}</td>
                                                 </tr>
                                             ))}
                                             </tbody>
                                         </table>
+                                        <p className="text-xs text-gray-400 p-2 text-center">Mostrando prévia dos primeiros 5 registros</p>
                                     </div>
                                 </div>
                             )}
+
+                            {isModalOpen && (
+                                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+                                    <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-100">
+                                        <div className="flex justify-between items-center mb-4">
+                                            <h3 className="text-xl font-bold text-gray-800">Identificar Cliente</h3>
+                                            <button
+                                                onClick={() => setIsModalOpen(false)}
+                                                className="p-1 hover:bg-gray-100 rounded-full text-gray-500 transition-colors"
+                                            >
+                                                <X className="w-6 h-6" />
+                                            </button>
+                                        </div>
+
+                                        <p className="text-sm text-gray-500 mb-4">
+                                            <strong>Atenção:</strong> O nome deve ser IDÊNTICO ao cadastrado no sistema (respeite espaços e maiúsculas).
+                                        </p>
+
+                                        <div className="mb-6">
+                                            <label className="block text-sm font-semibold text-gray-700 mb-2">
+                                                Nome da Bomba / Base
+                                            </label>
+                                            <input
+                                                type="text"
+                                                autoFocus
+                                                placeholder="Ex: Bomba 01 - Matriz"
+                                                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
+                                                value={pumpName}
+                                                onChange={(e) => setPumpName(e.target.value)}
+                                                onKeyDown={(e) => e.key === 'Enter' && confirmDownload()}
+                                            />
+                                        </div>
+
+                                        <div className="flex gap-3">
+                                            <button
+                                                onClick={() => setIsModalOpen(false)}
+                                                className="flex-1 px-4 py-3 rounded-xl font-semibold text-gray-600 hover:bg-gray-100 transition-colors"
+                                            >
+                                                Cancelar
+                                            </button>
+                                            <button
+                                                onClick={confirmDownload}
+                                                className="flex-1 px-4 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95 flex justify-center items-center"
+                                            >
+                                                <Download className="w-5 h-5 mr-2" />
+                                                Gerar Arquivo
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
                         </div>
                     </div>
                 )}
