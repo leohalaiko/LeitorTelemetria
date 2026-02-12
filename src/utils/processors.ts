@@ -1,5 +1,12 @@
-// src/utils/processors.ts
+import Papa from 'papaparse';
 import { parseWlnContent, type WlnRecord } from './wlnParser';
+
+// --- TIPAGENS ---
+interface TankRecord {
+    timestamp: number;
+    volume: number;
+    rawDate: string;
+}
 
 // --- AUXILIARES ---
 const formatUnixDate = (timestamp: any) => {
@@ -17,65 +24,191 @@ const calculateVolume = (final: any, start: any) => {
     return isNaN(vol) ? 0 : Number(vol.toFixed(2));
 };
 
-// --- FUNÇÃO 1: PROCESSADOR EXCLUSIVO WLN ---
+// --- PROCESSADOR WLN ---
 export const processWlnFile = (file: File): Promise<WlnRecord[]> => {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
-
         reader.onload = (e) => {
             const text = e.target?.result;
             if (typeof text === 'string') {
                 const data = parseWlnContent(text);
                 resolve(data);
             } else {
-                reject(new Error("Falha ao ler o conteúdo do arquivo WLN."));
+                reject(new Error("Falha ao ler WLN."));
             }
         };
-
-        reader.onerror = () => {
-            reject(new Error("Erro de leitura de arquivo."));
-        };
-
         reader.readAsText(file);
     });
 };
 
-// --- FUNÇÃO 2: PROCESSADOR GERAL ---
+// --- PROCESSADOR DE ARQUIVO DE TANQUE (CSV) ---
+export const parseTankFile = (file: File): Promise<TankRecord[]> => {
+    return new Promise((resolve, reject) => {
+        Papa.parse(file, {
+            header: true,
+            delimiter: ";", // O seu arquivo usa ponto e vírgula
+            skipEmptyLines: true,
+            transformHeader: (h) => h.trim().replace(/"/g, ''),
+            complete: (results: any) => {
+                const records: TankRecord[] = [];
+
+                results.data.forEach((row: any) => {
+                    // Colunas possíveis para Hora e Volume
+                    const horaStr = row['Hora'] || row['Horário'] || row['Data'] || row['Time'];
+                    const volStr = row['Estoque S10 Dura+'] || row['Tanque 1 - S10'] || row['Volume'] || row['Estoque'];
+
+                    if (horaStr && volStr) {
+                        try {
+                            // CORREÇÃO 1: Parsing de Data Robusto
+                            const parts = horaStr.split(' ');
+                            if(parts.length < 2) return;
+
+                            const [datePart, timePart] = parts;
+                            const [dia, mes, ano] = datePart.split('.');
+                            const isoDate = `${ano}-${mes}-${dia}T${timePart}`;
+                            const ts = new Date(isoDate).getTime();
+
+                            // CORREÇÃO 2: Respeitar o Ponto Decimal
+                            // Antes removíamos o ponto, agora mantemos. Apenas trocamos vírgula por ponto se houver.
+                            // Removemos " l" ou " L" se tiver unidade
+                            let cleanVolStr = String(volStr).replace(/[lL]\s*$/, '').trim();
+
+                            // Se tiver vírgula, troca por ponto.
+                            cleanVolStr = cleanVolStr.replace(',', '.');
+
+                            const volClean = parseFloat(cleanVolStr);
+
+                            if (!isNaN(ts) && !isNaN(volClean)) {
+                                records.push({ timestamp: ts, volume: volClean, rawDate: horaStr });
+                            }
+                        } catch (err) {
+                            // Ignora linhas de erro
+                        }
+                    }
+                });
+
+                // Ordena por horário crescente para facilitar a busca
+                records.sort((a, b) => a.timestamp - b.timestamp);
+                resolve(records);
+            },
+            error: (err: any) => reject(err)
+        });
+    });
+};
+
+// --- LÓGICA DE CONCILIAÇÃO (MATCH) ---
+export const reconciliateData = (wlnData: any[], tankData: TankRecord[]) => {
+    const processedIDs = new Set<string>(); // Para evitar duplicidade
+    const results: any[] = [];
+
+    // Filtra apenas linhas WLN válidas com ID
+    const validRows = wlnData.filter(row => row.upar0 && Number(row.upar0) > 0);
+
+    validRows.forEach(row => {
+        const idOperacao = String(row.upar0);
+
+        // CORREÇÃO 3: Remover Duplicidade
+        // Se já processamos esse ID, pulamos (pegamos apenas o primeiro registro encontrado na ordem do arquivo)
+        if (processedIDs.has(idOperacao)) return;
+        processedIDs.add(idOperacao);
+
+        // Horários
+        const startTs = String(row.upar3).length > 11 ? Number(row.upar3) : Number(row.upar3) * 1000;
+
+        let endTs = 0;
+        if (row.upar5 && Number(row.upar5) > 0) {
+            endTs = String(row.upar5).length > 11 ? Number(row.upar5) : Number(row.upar5) * 1000;
+        } else {
+            // Se não tiver data final, chuta 4 minutos (tempo médio de um abastecimento de caminhão)
+            endTs = startTs + (4 * 60 * 1000);
+        }
+
+        // Busca Nível do Tanque
+        const tankStart = findClosestRecord(tankData, startTs);
+        const tankEnd = findClosestRecord(tankData, endTs);
+
+        let volumeCalculado = 0;
+        let nivelInicial = 0;
+        let nivelFinal = 0;
+
+        if (tankStart && tankEnd) {
+            nivelInicial = tankStart.volume;
+            nivelFinal = tankEnd.volume;
+
+            // CORREÇÃO 4: Lógica do Tanque (Tanque desce quando abastece)
+            // Consumo = Inicial (Maior) - Final (Menor)
+            volumeCalculado = nivelInicial - nivelFinal;
+
+            // Tratamento de ruído/abastecimento do tanque (valor negativo)
+            if (volumeCalculado < 0) volumeCalculado = 0;
+        }
+
+        results.push({
+            'originalTimestamp': startTs,
+            'Data': formatUnixDate(row.upar3),
+            'Data Final': formatUnixDate(row.upar5 || endTs/1000),
+            'ID Operação': row.upar0,
+            'Veículo (Cartão)': row.upar1 || '',
+            'Frentista': row.upar2 || '',
+
+            // Volume calculado com precisão de 2 casas
+            'Volume (L)': Number(volumeCalculado.toFixed(2)),
+
+            // Campos para conferência visual
+            'Tanque Inicial': nivelInicial,
+            'Tanque Final': nivelFinal,
+
+            'Odômetro': row.upar10 || '-',
+
+            // Zera encerrantes de bomba (Modo Manual)
+            'Encerrante Inicial': 0,
+            'Encerrante Final': 0,
+            'Tipo': 'Conciliado'
+        });
+    });
+
+    return results;
+};
+
+// Auxiliar: Encontrar registro de tanque mais próximo
+const findClosestRecord = (records: TankRecord[], targetTs: number): TankRecord | null => {
+    if (records.length === 0) return null;
+    return records.reduce((prev, curr) => {
+        return (Math.abs(curr.timestamp - targetTs) < Math.abs(prev.timestamp - targetTs) ? curr : prev);
+    });
+};
+
+
+// --- PROCESSADOR GERAL ---
 export const processLogFile = (data: any[], mode: string, extraParams: any = {}) => {
     switch (mode) {
         case 'normal':
             return processNormalSupply(data);
         case 'travado':
             return processLockedID(data, extraParams.startId || 0);
-        case 'erro':
-            return processFrameError(data);
+        case 'transcricao':
+            return processManualTranscript(data);
         default:
             return data;
     }
 };
 
-// --- SUB-FUNÇÕES DE LÓGICA DE NEGÓCIO ---
-
-// 1. LÓGICA: ABASTECIMENTO NORMAL
+// --- MODOS ANTIGOS (Mantidos) ---
 const processNormalSupply = (data: any[]) => {
     const result: any[] = [];
     const processedSignatures = new Set();
-
     data.forEach((row) => {
         if (row.upar0 && row.upar6 && row.upar4) {
             const vol = calculateVolume(row.upar6, row.upar4);
             const signature = `${row.upar3}-${row.upar4}`;
-
             if (vol > 0.5 && !processedSignatures.has(signature)) {
                 processedSignatures.add(signature);
-
-                // Normaliza o timestamp para Milissegundos (igual ao formatUnixDate)
                 const rawTs = Number(row.upar3);
                 const timeMs = String(rawTs).length > 11 ? rawTs : rawTs * 1000;
-
                 result.push({
-                    'originalTimestamp': timeMs, // <--- 1. ADICIONADO AQUI
+                    'originalTimestamp': timeMs,
                     'Data': formatUnixDate(row.upar3),
+                    'Data Final': formatUnixDate(row.upar5),
                     'ID Operação': row.upar0,
                     'Veículo (Cartão)': row.upar1,
                     'Frentista': row.upar2,
@@ -83,7 +216,7 @@ const processNormalSupply = (data: any[]) => {
                     'Encerrante Inicial': row.upar4,
                     'Encerrante Final': row.upar6,
                     'Odômetro': row.upar10 || '-',
-                    'Tipo': row.upar7 === '3' ? 'Comboio' : 'Padrão'
+                    'Tipo': 'Normal'
                 });
             }
         }
@@ -91,33 +224,25 @@ const processNormalSupply = (data: any[]) => {
     return result;
 };
 
-// 2. LÓGICA: ID TRAVADO
 const processLockedID = (data: any[], startIdInput: number) => {
     const uniqueSupplies: any[] = [];
     const processedSignatures = new Set();
     let currentIdCounter = Number(startIdInput);
-
     data.forEach(row => {
         const vol = calculateVolume(row.upar6, row.upar4);
         const signature = `${row.upar3}-${row.upar4}`;
-
         if (vol > 0.5 && !processedSignatures.has(signature)) {
             processedSignatures.add(signature);
             uniqueSupplies.push({ row, vol });
         }
     });
-
     uniqueSupplies.sort((a, b) => Number(a.row.upar3) - Number(b.row.upar3));
-
     return uniqueSupplies.map(item => {
         currentIdCounter++;
-
-        // Normaliza o timestamp para Milissegundos
         const rawTs = Number(item.row.upar3);
         const timeMs = String(rawTs).length > 11 ? rawTs : rawTs * 1000;
-
         return {
-            'originalTimestamp': timeMs, // <--- 2. ADICIONADO AQUI
+            'originalTimestamp': timeMs,
             'ID Gerado (Corrigido)': currentIdCounter,
             'ID Original (Travado)': item.row.upar0,
             'Data Inicial': formatUnixDate(item.row.upar3),
@@ -131,16 +256,41 @@ const processLockedID = (data: any[], startIdInput: number) => {
     });
 };
 
-// --- Helper para preparar os dados para o App.tsx ---
+const processManualTranscript = (data: any[]) => {
+    // Apenas para mostrar tudo no modo manual simples (sem tanque)
+    return data
+        .filter(row => row.upar0)
+        .map(row => {
+            const vol = calculateVolume(row.upar6 || 0, row.upar4 || 0);
+            const rawTs = Number(row.upar3);
+            const timeMs = String(rawTs).length > 11 ? rawTs : rawTs * 1000;
+            const dataFinal = row.upar5 ? formatUnixDate(row.upar5) : formatUnixDate(row.upar3);
+
+            return {
+                'originalTimestamp': timeMs,
+                'Data': formatUnixDate(row.upar3),
+                'Data Final': dataFinal,
+                'ID Operação': row.upar0,
+                'Veículo (Cartão)': row.upar1 || '',
+                'Frentista': row.upar2 || '',
+                'Volume (L)': vol,
+                'Encerrante Inicial': row.upar4 || 0,
+                'Encerrante Final': row.upar6 || 0,
+                'Odômetro': row.upar10 || '-',
+                'Tipo': 'Manual'
+            };
+        });
+};
+
+// --- FORMATADOR EXCEL FINAL ---
 export const formatForExcel = (data: any[]) => {
-    // 1. Ordena cronologicamente
+    // CORREÇÃO 5: Ordenação Decrescente (Mais novo primeiro)
     const sortedData = [...data].sort((a, b) => {
         const timeA = a.originalTimestamp || 0;
         const timeB = b.originalTimestamp || 0;
-        return timeA - timeB;
+        return timeB - timeA; // Invertido: B - A
     });
 
-    // 2. Retorna os dados normalizados com o AJUSTE DO "0" EXTRA
     return sortedData.map((item) => {
         let dateObj = new Date();
         if (item.originalTimestamp) {
@@ -149,64 +299,30 @@ export const formatForExcel = (data: any[]) => {
 
         const horaInicio = dateObj.toLocaleTimeString('pt-BR', { hour12: false });
 
-        const horaFim = item['Data Final']
-            ? new Date(item['Data Final']).toLocaleTimeString('pt-BR', { hour12: false })
-            : horaInicio;
+        let horaFim = horaInicio;
+        if (item['Data Final'] && item['Data Final'] !== '-') {
+            const parts = item['Data Final'].split(' ');
+            if (parts.length > 1) horaFim = parts[1];
+        }
 
-        // AJUSTE SOLICITADO: Multiplicar por 10 para adicionar a casa decimal "0"
-        const encInicial = Number(item['Encerrante Inicial'] || 0);
-        const encFinal = Number(item['Encerrante Final'] || 0);
+        // Se tem volume conciliado, usa ele.
+        // Importante: Não multiplicamos encerrante por 10 no modo conciliado para não confundir
+        // Mas se você quiser manter o padrão x10, podemos manter.
+        const medidorIni = (item['Encerrante Inicial'] || 0) * 10;
+        const medidorFim = (item['Encerrante Final'] || 0) * 10;
 
         return {
             raw: item,
             bomba: 'S10',
             horaInicio: horaInicio,
             horaFim: horaFim,
-            medidorInicial: encInicial * 10, // <--- Adiciona o "0"
-            medidorFinal: encFinal * 10,     // <--- Adiciona o "0"
+            medidorInicial: medidorIni,
+            medidorFinal: medidorFim,
             placa: item['Veículo (Cartão)'] || item['Veículo'] || '',
             id: item['ID Operação'] || item['ID Original (Travado)'] || '',
             frentista: item['Frentista'] || '',
-            odometro: item['Odômetro'] !== '-' ? Number(item['Odômetro']) : ''
+            odometro: item['Odômetro'] !== '-' ? Number(item['Odômetro']) : '',
+            volumeConciliado: item['Volume (L)']
         };
     });
-};
-
-
-
-// 3. LÓGICA: IDENTIFICADOR DE ERRO
-const processFrameError = (data: any[]) => {
-    const result: any[] = [];
-
-    data.forEach((row, index) => {
-        let errosEncontrados = [];
-
-        const pwrExt = Number(row.pwr_ext);
-        const pwrInt = Number(row.pwr_int);
-
-        if (row.pwr_ext && pwrExt < 10) errosEncontrados.push(`Tensão Ext Baixa (${pwrExt}V)`);
-        if (row.pwr_int && pwrInt < 2) errosEncontrados.push(`Bateria Int Baixa (${pwrInt}V)`);
-
-        if (row.upar4 == 0) errosEncontrados.push("Encerrante Inicial Zerado (upar4=0)");
-        if (row.upar6 == 0) errosEncontrados.push("Encerrante Final Zerado (upar6=0)");
-
-        const encInicial = Number(row.upar4);
-        const encFinal = Number(row.upar6);
-
-        if (encInicial > 0 && encFinal > 0) {
-            if (encFinal <= encInicial) {
-                errosEncontrados.push(`Não Evoluiu (Vol: ${(encFinal-encInicial).toFixed(1)})`);
-            }
-        }
-
-        if (errosEncontrados.length > 0) {
-            result.push({
-                'Linha Arquivo': index + 2,
-                'Data': formatUnixDate(row.upar3),
-                'Erros Detectados': errosEncontrados.join(', '),
-                'Dados Brutos': `Ext:${pwrExt}V | Upar4:${encInicial} | Upar6:${encFinal}`
-            });
-        }
-    });
-    return result;
 };

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Fuel, AlertTriangle, Lock, FileWarning, FileCode } from 'lucide-react'; // Adicionei FileCode
+import { Fuel, AlertTriangle, Lock, FileWarning, FileCode, ClipboardEdit } from 'lucide-react'; // Adicionei ClipboardEdit
 
 interface ModeSelectorProps {
     onSelectMode: (mode: string) => void;
@@ -17,6 +17,15 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({ onSelectMode }) => {
             disabled: false
         },
         {
+            id: 'transcricao', // <--- NOVO MODO
+            title: 'Transcrição Manual (Fluxômetro OFF)',
+            desc: 'Gera o Excel com TODOS os registros para edição manual da litragem.',
+            icon: <ClipboardEdit className="w-8 h-8 text-orange-500" />,
+            color: 'hover:border-orange-500 hover:bg-orange-50',
+            bgIcon: 'bg-orange-50',
+            disabled: false
+        },
+        {
             id: 'travado',
             title: 'ID Travado',
             desc: 'Cartão identificado mas sem registro de volume (Vol = 0)',
@@ -26,21 +35,12 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({ onSelectMode }) => {
             disabled: false
         },
         {
-            id: 'wln', // <--- NOVO MODO ADICIONADO
+            id: 'wln',
             title: 'Leitor WLN (Debug)',
             desc: 'Importar arquivo bruto .WLN ou .TXT para análise técnica',
             icon: <FileCode className="w-8 h-8 text-indigo-500" />,
             color: 'hover:border-indigo-500 hover:bg-indigo-50',
             bgIcon: 'bg-indigo-50',
-            disabled: false
-        },
-        {
-            id: 'erro',
-            title: 'Erro de Trama',
-            desc: 'Logs com falha de GPS (valid=0) ou Sensor (can_r25)',
-            icon: <FileWarning className="w-8 h-8 text-red-500" />,
-            color: 'hover:border-red-500 hover:bg-red-50',
-            bgIcon: 'bg-red-50',
             disabled: false
         },
         {
