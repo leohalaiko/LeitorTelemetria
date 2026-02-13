@@ -22,7 +22,7 @@ function App() {
     const [pumpName, setPumpName] = useState("");
     const [fileNameClient, setFileNameClient] = useState("");
 
-    // NOVO ESTADO: Guarda o arquivo molde
+    // Guarda o arquivo molde
     const [templateFile, setTemplateFile] = useState<File | null>(null);
 
     const handleRowEdit = (index: number, field: string, value: string) => {
@@ -35,12 +35,12 @@ function App() {
         if (processedData.length > 0) {
             setPumpName("");
             setFileNameClient("");
-            setTemplateFile(null); // Reseta o molde ao abrir
+            setTemplateFile(null);
             setIsModalOpen(true);
         }
     };
 
-    // --- A MÁGICA DA INJEÇÃO DE MOLDE ---
+    // --- A MÁGICA DA INJEÇÃO CIRÚRGICA ---
     const confirmDownload = async () => {
         if (!pumpName.trim() || !fileNameClient.trim()) {
             toast.error("Preencha o Nome da Bomba e o Código do Cliente!");
@@ -52,15 +52,13 @@ function App() {
         }
 
         try {
-            // 1. Lê o arquivo Molde Original com todo o seu DNA e metadados
+            // 1. Lê o Molde preservando TUDO (Fórmulas, Cores, Dicionários, etc)
             const arrayBuffer = await templateFile.arrayBuffer();
-            const wb = XLSX.read(arrayBuffer, { type: 'array', cellStyles: true, cellFormula: true });
+            const wb = XLSX.read(arrayBuffer, { type: 'array', cellStyles: true, cellFormula: true, cellHTML: false });
 
-            // Pega a primeira aba do Molde
             const wsName = wb.SheetNames[0];
             const ws = wb.Sheets[wsName];
 
-            // 2. Prepara os nossos dados
             const cleanData = formatForExcel(processedData);
 
             let medidorInicialDia = 0;
@@ -71,22 +69,33 @@ function App() {
                 }
             }
 
-            // A linha 2 (Setup sem ID e sem Placa)
-            const row2 = [
-                "",
-                "",
-                "",
-                medidorInicialDia,
-                "",
-                "",
-                "",
-                0,
-                "",
-                "",
-                "",
-                "",
-                ""
-            ];
+            // FUNÇÃO CIRÚRGICA: Atualiza apenas uma célula específica sem tocar no resto da linha
+            const updateCell = (r: number, c: number, val: any) => {
+                if (val === undefined || val === null || val === "") return;
+
+                const cellRef = XLSX.utils.encode_cell({ r, c });
+                let cell = ws[cellRef];
+
+                // Se a célula não existe no molde, nós a criamos
+                if (!cell) {
+                    cell = {};
+                    ws[cellRef] = cell;
+                }
+
+                // Injeta Número ou Texto
+                if (typeof val === 'number' && !isNaN(val)) {
+                    cell.t = 'n';
+                    cell.v = val;
+                    delete cell.w; // Limpa o cache visual para o Excel recalcular
+                } else {
+                    cell.t = 's';
+                    cell.v = String(val).trim();
+                    delete cell.w;
+                }
+            };
+
+            // INJEÇÃO DA LINHA 2 (r=1)
+            updateCell(1, 3, medidorInicialDia); // D2: Medidor
 
             let medidorCorrente = medidorInicialDia;
 
@@ -97,48 +106,49 @@ function App() {
                 return timeStr;
             };
 
-            // Transforma nossos dados em um formato que o Excel entenda (Array de Arrays)
-            const dataRows = cleanData.map((item) => {
+            // INJEÇÃO DOS DADOS (A partir da Linha 3 | r=2)
+            cleanData.forEach((item, index) => {
                 const isConciliado = currentMode === 'transcricao' && item.volumeConciliado !== undefined;
 
-                let encIni, encFim, litros, medidorCol;
+                let medidorCol;
 
                 if (isConciliado) {
-                    encIni = medidorCorrente;
-                    encFim = medidorCorrente + Math.round(item.volumeConciliado * 100);
-                    litros = item.volumeConciliado;
+                    const encFim = medidorCorrente + Math.round(item.volumeConciliado * 100);
                     medidorCol = encFim;
                     medidorCorrente = encFim;
                 } else {
-                    encIni = item.medidorInicial;
-                    encFim = item.medidorFinal;
-                    litros = (encFim - encIni) / 100;
-                    medidorCol = encFim;
+                    medidorCol = item.medidorFinal;
                 }
 
-                if (isNaN(litros)) litros = 0;
+                const R = index + 2; // R=2 é a linha 3 no Excel
 
-                return [
-                    pumpName.trim(),
-                    formatTime(item.horaInicio),
-                    formatTime(item.horaFim),
-                    medidorCol,
-                    "",
-                    encIni,
-                    encFim,
-                    Number(litros.toFixed(2)),
-                    item.placa,
-                    "",
-                    item.id,
-                    item.frentista,
-                    item.odometro
-                ];
+                // Injetamos apenas as colunas de dados cruas!
+                updateCell(R, 0, pumpName.trim());                 // Coluna A (Bomba)
+                updateCell(R, 1, formatTime(item.horaInicio));     // Coluna B (Hora Inicio)
+                updateCell(R, 2, formatTime(item.horaFim));        // Coluna C (Hora Fim)
+                updateCell(R, 3, medidorCol);                      // Coluna D (Medidor)
+
+                // PULA E, F, G, H (Deixa o Molde calcular)
+
+                updateCell(R, 8, item.placa);                      // Coluna I (Placa)
+
+                // PULA J (1e-05)
+
+                // ID (Coluna K) - Tenta salvar como número puro sem formatação, se falhar salva como texto
+                const idVal = Number(item.id);
+                updateCell(R, 10, isNaN(idVal) ? item.id : idVal);
+
+                updateCell(R, 11, item.frentista);                 // Coluna L (Frentista)
+                updateCell(R, 12, item.odometro);                  // Coluna M (Odometro)
             });
 
-            // 3. INJEÇÃO: Sobrescreve os dados no Molde a partir da Célula A2
-            XLSX.utils.sheet_add_aoa(ws, [row2, ...dataRows], { origin: "A2" });
+            // Atualiza a "Área Ativa" da planilha para que o Excel saiba que foram adicionadas linhas novas
+            const range = XLSX.utils.decode_range(ws['!ref'] || "A1:M1");
+            const maxRow = cleanData.length + 1;
+            if (maxRow > range.e.r) range.e.r = maxRow;
+            if (12 > range.e.c) range.e.c = 12;
+            ws['!ref'] = XLSX.utils.encode_range(range);
 
-            // 4. Salva o arquivo mantendo o formato original
             const d = processedData[0]?.originalTimestamp ? new Date(processedData[0].originalTimestamp) : new Date();
             const dia = String(d.getDate()).padStart(2,'0');
             const mes = String(d.getMonth()+1).padStart(2,'0');
@@ -147,9 +157,10 @@ function App() {
             const clientCode = fileNameClient.trim().replace(/\s+/g, '');
             const nomeArquivo = `Planilha insercao de abastecimento_S10_${clientCode}_${dia}${mes}${ano}.xlsx`;
 
+            // Salva o arquivo preservando toda a infraestrutura do Excel e do Molde
             XLSX.writeFile(wb, nomeArquivo, { compression: true, bookSST: true });
 
-            toast.success(`Planilha gerada com sucesso a partir do Molde!`);
+            toast.success(`Planilha gerada com sucesso! Fórmulas preservadas.`);
             setIsModalOpen(false);
 
         } catch (error: any) {
@@ -299,7 +310,7 @@ function App() {
                                             <div className="p-2 bg-green-100 rounded-lg text-green-600"><FileSpreadsheet className="w-6 h-6" /></div>
                                             <div>
                                                 <p className="font-bold text-green-900">Pronto para Exportar!</p>
-                                                <p className="text-sm text-green-700">Edite as placas e baixe a planilha injetando em um molde.</p>
+                                                <p className="text-sm text-green-700">Edite as placas e baixe a planilha injetando no seu molde.</p>
                                             </div>
                                         </div>
                                         <button onClick={handleDownloadClick} className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl font-bold flex items-center shadow-lg transition-all active:scale-95">
@@ -357,7 +368,6 @@ function App() {
                                             <button onClick={() => setIsModalOpen(false)} className="p-1 hover:bg-gray-100 rounded-full text-gray-500"><X className="w-6 h-6" /></button>
                                         </div>
 
-                                        {/* NOVO CAMPO: UPLOAD DO MOLDE */}
                                         <div className="mb-4 bg-blue-50 p-4 rounded-xl border border-blue-100">
                                             <label className="block text-sm font-bold text-blue-800 mb-2">
                                                 1. Planilha Molde (Obrigatório)
@@ -368,7 +378,7 @@ function App() {
                                                 className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 outline-none"
                                                 onChange={(e) => setTemplateFile(e.target.files?.[0] || null)}
                                             />
-                                            <p className="text-xs text-blue-600 mt-2 leading-tight">Carregue um arquivo .xlsx original do sistema, com os dados zerados, para o robô injetar os cálculos.</p>
+                                            <p className="text-xs text-blue-600 mt-2 leading-tight">Certifique-se de que o molde tenha as fórmulas puxadas para baixo o suficiente.</p>
                                         </div>
 
                                         <div className="mb-4">
