@@ -2,9 +2,9 @@ import { useState } from 'react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { toast, Toaster } from 'sonner';
-import { ArrowLeft, Download, FileSpreadsheet, Settings, X, Fuel } from 'lucide-react';
+import { ArrowLeft, Download, FileSpreadsheet, Settings, X, Fuel, Edit3 } from 'lucide-react';
 
-// Importação das funções (Adicionei as novas)
+// Importação das funções
 import { processLogFile, processWlnFile, formatForExcel, parseTankFile, reconciliateData } from './utils/processors';
 
 import { ModeSelector } from './components/ModeSelector';
@@ -16,7 +16,7 @@ function App() {
     const [isProcessing, setIsProcessing] = useState(false);
     const [startIdInput, setStartIdInput] = useState<string>("");
 
-    // --- ESTADOS NOVOS PARA CONCILIAÇÃO ---
+    // ESTADOS NOVOS PARA CONCILIAÇÃO
     const [wlnFile, setWlnFile] = useState<File | null>(null);
     const [tankFile, setTankFile] = useState<File | null>(null);
 
@@ -24,14 +24,21 @@ function App() {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [pumpName, setPumpName] = useState("");
 
-// --- MANIPULAÇÃO EXCEL (CLONE EXATO DO ARQUIVO MANUAL) ---
+    // --- FUNÇÃO PARA EDITAR LINHAS DIRETO NO SITE ---
+    const handleRowEdit = (index: number, field: string, value: string | number) => {
+        const newData = [...processedData];
+        newData[index] = { ...newData[index], [field]: value };
+        setProcessedData(newData);
+    };
+
+    // --- MANIPULAÇÃO EXCEL (CLONE EXATO DO ARQUIVO MANUAL) ---
     const createWorkbook = (nomeBombaBruto: string) => {
         const cleanData = formatForExcel(processedData);
         if (cleanData.length === 0) return null;
 
         const nomeBomba = nomeBombaBruto.trim();
 
-        // Cabeçalhos (Ajustado para 1e-05 conforme seu arquivo manual original)
+        // Cabeçalhos
         const headers = [
             "Bomba", "Hora Inicio", "Hora Fim", "Medidor",
             "Encerrante inicial m³", "Encerrante Inicial", "Encerrante Final",
@@ -41,19 +48,18 @@ function App() {
         const sheetData: any[][] = [];
         sheetData.push(headers);
 
-        // --- SETUP LINHA 2 (O SEGREDO ESTÁ AQUI) ---
-        // A linha 2 DEVE ter a coluna Bomba vazia e Litros = 0 para o robô da plataforma não bugar
+        // SETUP LINHA 2
         const medidorInicialDia = cleanData[0].medidorInicial || 0;
 
         const row2 = [
-            "",                 // A: Bomba (DEVE SER VAZIO NA LINHA 2)
+            "",                 // A: Bomba VAZIA
             "",                 // B: Hora Inicio
             "",                 // C: Hora Fim
             medidorInicialDia,  // D: Medidor
-            "",                 // E: Encerrante m3 (DEVE SER VAZIO NA LINHA 2)
+            "",                 // E: Encerrante m3 VAZIO
             null,               // F: Encerrante Inicial
             null,               // G: Encerrante Final
-            0,                  // H: Litros (DEVE SER ZERO NA LINHA 2)
+            0,                  // H: Litros ZERO
             "",                 // I: Placa
             "",                 // J: 1e-05
             "",                 // K: ID
@@ -62,7 +68,7 @@ function App() {
         ];
         sheetData.push(row2);
 
-        // --- DADOS (LINHA 3 em diante) ---
+        // DADOS
         cleanData.forEach((item) => {
             const isConciliado = currentMode === 'transcricao' && item.volumeConciliado !== undefined;
 
@@ -71,7 +77,7 @@ function App() {
                 item.horaInicio,
                 item.horaFim,
                 item.medidorFinal,
-                "", // m3 vazio
+                "",
                 isConciliado ? item.raw['Tanque Inicial'] : null,
                 isConciliado ? item.raw['Tanque Final'] : null,
                 isConciliado ? item.volumeConciliado : null,
@@ -99,7 +105,6 @@ function App() {
 
         ws['!cols'] = [{ wch: 45 }, { wch: 12 }, { wch: 12 }, { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 15 }, { wch: 20 }, { wch: 10 }];
 
-        // Nome Aba (Data Exata)
         let nomeDaAba = "Abastecimentos";
         if (processedData.length > 0 && processedData[0].originalTimestamp) {
             const d = new Date(processedData[0].originalTimestamp);
@@ -122,11 +127,10 @@ function App() {
         const nomeArquivo = `Planilha S10_${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}.${d.getFullYear()}.xlsx`;
 
         XLSX.writeFile(wb, nomeArquivo);
-        toast.success(`Planilha gerada!`);
+        toast.success(`Planilha gerada com sucesso!`);
         setIsModalOpen(false);
     };
 
-    // --- PROCESSAR CONCILIAÇÃO ---
     const handleProcessConciliation = async () => {
         if (!wlnFile || !tankFile) {
             toast.error("Por favor, selecione os dois arquivos.");
@@ -134,25 +138,18 @@ function App() {
         }
         setIsProcessing(true);
         try {
-            // 1. Processa WLN
             const wlnRaw = await processWlnFile(wlnFile);
-
-            // 2. Processa Tanque
             const tankRaw = await parseTankFile(tankFile);
 
-            if (tankRaw.length === 0) {
-                throw new Error("Não foi possível ler dados do arquivo de tanque. Verifique se é um CSV válido.");
-            }
+            if (tankRaw.length === 0) throw new Error("Não foi possível ler dados do arquivo de tanque.");
 
-            // 3. Cruza os dados
             const mergedData = reconciliateData(wlnRaw, tankRaw);
-
             setProcessedData(mergedData);
 
             if (mergedData.length > 0) {
-                toast.success(`Conciliação concluída! ${mergedData.length} abastecimentos identificados.`);
+                toast.success(`Conciliação concluída! Edite as placas se necessário.`);
             } else {
-                toast.warning("Nenhum abastecimento encontrado no cruzamento de horários.");
+                toast.warning("Nenhum abastecimento encontrado no cruzamento.");
             }
         } catch (error: any) {
             console.error(error);
@@ -161,9 +158,7 @@ function App() {
         setIsProcessing(false);
     };
 
-    // --- LEITURA PADRÃO ---
     const handleFileSelect = async (file: File) => {
-        // Se estiver no modo conciliação, guarda o arquivo no state
         if (currentMode === 'transcricao') {
             const name = file.name.toLowerCase();
             if (name.endsWith('.wln') || name.endsWith('.txt')) {
@@ -173,12 +168,11 @@ function App() {
                 setTankFile(file);
                 toast.info("Arquivo de Tanque (Níveis) carregado!");
             } else {
-                toast.warning("Formato desconhecido. Use WLN para telemetria ou CSV para tanque.");
+                toast.warning("Formato desconhecido.");
             }
             return;
         }
 
-        // Lógica normal para outros modos
         setIsProcessing(true);
         setProcessedData([]);
 
@@ -193,7 +187,7 @@ function App() {
                 if (data.length > 0) {
                     const cleanData = processLogFile(data, currentMode || 'normal', { startId: Number(startIdInput) });
                     setProcessedData(cleanData.length > 0 ? cleanData : data);
-                    toast.success(`${cleanData.length || data.length} registros.`);
+                    toast.success(`${cleanData.length || data.length} registros. Edite as placas abaixo.`);
                 }
             } else {
                 Papa.parse(file, {
@@ -201,12 +195,12 @@ function App() {
                     complete: (res: any) => {
                         const clean = processLogFile(res.data, currentMode || 'normal', { startId: Number(startIdInput) });
                         setProcessedData(clean);
-                        toast.success(`${clean.length} registros.`);
+                        toast.success(`${clean.length} registros. Edite as placas abaixo.`);
                     },
                     error: (err: any) => { toast.error("Erro CSV: " + err.message); setIsProcessing(false); }
                 });
             }
-        } catch (e) { toast.error("Erro."); }
+        } catch (e) { toast.error("Erro ao processar."); }
         setIsProcessing(false);
     };
 
@@ -231,7 +225,6 @@ function App() {
 
                         <div className="bg-white rounded-3xl shadow-xl p-8 border border-gray-100 relative">
 
-                            {/* --- INTERFACE DE CONCILIAÇÃO --- */}
                             {currentMode === 'transcricao' ? (
                                 <div className="space-y-6">
                                     <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl text-orange-800 text-sm mb-6">
@@ -239,24 +232,14 @@ function App() {
                                     </div>
 
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        {/* WLN */}
                                         <div className={`p-6 rounded-2xl border-2 border-dashed transition-all ${wlnFile ? 'border-green-400 bg-green-50' : 'border-gray-300 hover:border-blue-400'}`}>
                                             <h3 className="font-bold text-gray-700 mb-2 flex items-center"><Fuel className="w-5 h-5 mr-2"/> 1. Telemetria (WLN)</h3>
-                                            {wlnFile ? (
-                                                <div className="text-green-700 font-medium truncate">{wlnFile.name}</div>
-                                            ) : (
-                                                <FileUpload onFileSelect={handleFileSelect} />
-                                            )}
+                                            {wlnFile ? <div className="text-green-700 font-medium truncate">{wlnFile.name}</div> : <FileUpload onFileSelect={handleFileSelect} />}
                                         </div>
 
-                                        {/* TANQUE */}
                                         <div className={`p-6 rounded-2xl border-2 border-dashed transition-all ${tankFile ? 'border-green-400 bg-green-50' : 'border-gray-300 hover:border-blue-400'}`}>
                                             <h3 className="font-bold text-gray-700 mb-2 flex items-center"><Settings className="w-5 h-5 mr-2"/> 2. Nível Tanque (CSV)</h3>
-                                            {tankFile ? (
-                                                <div className="text-green-700 font-medium truncate">{tankFile.name}</div>
-                                            ) : (
-                                                <FileUpload onFileSelect={handleFileSelect} />
-                                            )}
+                                            {tankFile ? <div className="text-green-700 font-medium truncate">{tankFile.name}</div> : <FileUpload onFileSelect={handleFileSelect} />}
                                         </div>
                                     </div>
 
@@ -270,7 +253,6 @@ function App() {
                                     )}
                                 </div>
                             ) : (
-                                // --- INTERFACE NORMAL ---
                                 <>
                                     {currentMode === 'travado' && (
                                         <div className="mb-8 p-6 bg-purple-50 rounded-2xl border border-purple-100 flex flex-col md:flex-row items-center gap-4">
@@ -288,23 +270,56 @@ function App() {
                                     <div className="flex items-center justify-between mb-4 bg-green-50 p-4 rounded-xl border border-green-100">
                                         <div className="flex items-center gap-3">
                                             <div className="p-2 bg-green-100 rounded-lg text-green-600"><FileSpreadsheet className="w-6 h-6" /></div>
-                                            <div><p className="font-bold text-green-900">Sucesso!</p><p className="text-sm text-green-700">{processedData.length} registros.</p></div>
+                                            <div>
+                                                <p className="font-bold text-green-900">Pronto para Exportar!</p>
+                                                <p className="text-sm text-green-700">Edite as placas e volumes diretamente na tabela abaixo se precisar.</p>
+                                            </div>
                                         </div>
                                         <button onClick={handleDownloadClick} className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl font-bold flex items-center shadow-lg transition-all active:scale-95">
                                             <Download className="w-5 h-5 mr-2" /> Baixar Excel
                                         </button>
                                     </div>
-                                    <div className="overflow-x-auto border border-gray-100 rounded-xl max-h-96">
-                                        <table className="w-full text-sm text-left">
-                                            <thead className="bg-gray-50 text-gray-500 font-medium sticky top-0">
-                                            <tr>{Object.keys(processedData[0]).map(h => (h !== 'raw' && <th key={h} className="px-4 py-3 whitespace-nowrap">{h}</th>))}</tr>
+
+                                    {/* TABELA TOTALMENTE EDITÁVEL */}
+                                    <div className="overflow-x-auto border border-gray-200 rounded-xl max-h-[500px] shadow-sm">
+                                        <table className="w-full text-sm text-left relative">
+                                            <thead className="bg-gray-100 text-gray-600 font-bold sticky top-0 z-10 shadow-sm">
+                                            <tr>
+                                                <th className="px-4 py-3 whitespace-nowrap">Data</th>
+                                                <th className="px-4 py-3 whitespace-nowrap">ID Operação</th>
+                                                <th className="px-4 py-3 whitespace-nowrap text-blue-600 flex items-center gap-1"><Edit3 className="w-4 h-4"/> Placa</th>
+                                                <th className="px-4 py-3 whitespace-nowrap text-blue-600"><Edit3 className="w-4 h-4 inline mr-1"/> Volume (L)</th>
+                                                <th className="px-4 py-3 whitespace-nowrap">Frentista</th>
+                                                <th className="px-4 py-3 whitespace-nowrap">Odômetro</th>
+                                            </tr>
                                             </thead>
                                             <tbody>
-                                            {processedData.slice(0, 10).map((row, i) => (
-                                                <tr key={i} className="border-t border-gray-50 hover:bg-gray-50">
-                                                    {Object.entries(row).map(([k, val]: any, idx) => (
-                                                        k !== 'raw' && <td key={idx} className="px-4 py-3 whitespace-nowrap">{typeof val === 'number' ? val.toFixed(2) : val}</td>
-                                                    ))}
+                                            {processedData.map((row, i) => (
+                                                <tr key={i} className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
+                                                    <td className="px-4 py-3 whitespace-nowrap">{row['Data'] || row['Data Inicial']}</td>
+                                                    <td className="px-4 py-3 whitespace-nowrap font-mono">{row['ID Operação'] || row['ID Original (Travado)']}</td>
+                                                    <td className="px-4 py-2">
+                                                        <input
+                                                            type="text"
+                                                            placeholder="EX: ABC1234"
+                                                            className="border border-blue-200 rounded-lg px-3 py-1.5 w-28 focus:ring-2 focus:ring-blue-500 outline-none uppercase font-bold text-gray-700 bg-white shadow-sm"
+                                                            value={row['Veículo (Cartão)'] ?? row['Veículo'] ?? ''}
+                                                            onChange={(e) => {
+                                                                if (row['Veículo'] !== undefined) handleRowEdit(i, 'Veículo', e.target.value.toUpperCase());
+                                                                else handleRowEdit(i, 'Veículo (Cartão)', e.target.value.toUpperCase());
+                                                            }}
+                                                        />
+                                                    </td>
+                                                    <td className="px-4 py-2">
+                                                        <input
+                                                            type="number"
+                                                            className="border border-blue-200 rounded-lg px-3 py-1.5 w-24 focus:ring-2 focus:ring-blue-500 outline-none font-bold text-gray-700 bg-white shadow-sm"
+                                                            value={row['Volume (L)']}
+                                                            onChange={(e) => handleRowEdit(i, 'Volume (L)', Number(e.target.value))}
+                                                        />
+                                                    </td>
+                                                    <td className="px-4 py-3 whitespace-nowrap">{row['Frentista']}</td>
+                                                    <td className="px-4 py-3 whitespace-nowrap">{row['Odômetro']}</td>
                                                 </tr>
                                             ))}
                                             </tbody>
