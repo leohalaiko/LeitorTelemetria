@@ -43,28 +43,34 @@ function App() {
         const sheetData: any[][] = [];
         sheetData.push(headers);
 
-        const medidorInicialDia = cleanData[0].medidorInicial || 0;
+        // VALIDAÇÃO 2: Busca o primeiro medidor VÁLIDO (> 0) no arquivo inteiro para ser a âncora
+        let medidorInicialDia = 0;
+        for (const item of cleanData) {
+            if (item.medidorInicial > 0) {
+                medidorInicialDia = item.medidorInicial;
+                break;
+            }
+        }
 
         const row2 = [
-            "",                 // A: Bomba (VAZIO)
-            "",                 // B: Hora Inicio
-            "",                 // C: Hora Fim
-            medidorInicialDia,  // D: Medidor
-            "",                 // E: m3 (VAZIO)
-            "",                 // F: Encerrante Inicial
-            "",                 // G: Encerrante Final
-            0,                  // H: Litros (ZERO)
-            "",                 // I: Placa
-            "",                 // J: 1e-05
-            "",                 // K: ID (VAZIO)
-            "",                 // L: Frentista
-            ""                  // M: Odometro
+            "",
+            "",
+            "",
+            medidorInicialDia,  // D: Medidor (Agora sempre > 0)
+            "",
+            "",
+            "",
+            0,
+            "",
+            "",
+            "",
+            "",
+            ""
         ];
         sheetData.push(row2);
 
         let medidorCorrente = medidorInicialDia;
 
-        // Função para remover os segundos (Transforma "19:11:00" em "19:11")
         const formatTime = (timeStr: string) => {
             if (!timeStr || timeStr === '-') return "";
             const parts = timeStr.split(':');
@@ -72,12 +78,11 @@ function App() {
             return timeStr;
         };
 
-        cleanData.forEach((item) => {
+        cleanData.forEach((item, index) => {
             const isConciliado = currentMode === 'transcricao' && item.volumeConciliado !== undefined;
 
             let encIni, encFim, litros, medidorCol;
 
-            // Matemática corrigida para divisão por 100
             if (isConciliado) {
                 encIni = medidorCorrente;
                 encFim = medidorCorrente + Math.round(item.volumeConciliado * 100);
@@ -93,15 +98,22 @@ function App() {
 
             if (isNaN(litros)) litros = 0;
 
+            const linhaExcel = index + 3;
+            const linhaAnterior = linhaExcel - 1;
+
+            const cellF = { t: 'n', v: encIni, f: `D${linhaAnterior}` };
+            const cellG = { t: 'n', v: encFim, f: `D${linhaExcel}` };
+            const cellH = { t: 'n', v: Number(litros.toFixed(2)), f: `(G${linhaExcel}-F${linhaExcel})*0.01` };
+
             const row = [
                 nomeBomba,
                 formatTime(item.horaInicio),
                 formatTime(item.horaFim),
                 medidorCol,
                 "",
-                encIni,
-                encFim,
-                Number(litros.toFixed(2)),
+                cellF,
+                cellG,
+                cellH,
                 item.placa,
                 "",
                 item.id,

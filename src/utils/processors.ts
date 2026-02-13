@@ -46,20 +46,18 @@ export const parseTankFile = (file: File): Promise<TankRecord[]> => {
     return new Promise((resolve, reject) => {
         Papa.parse(file, {
             header: true,
-            delimiter: ";", // O seu arquivo usa ponto e vírgula
+            delimiter: ";",
             skipEmptyLines: true,
             transformHeader: (h) => h.trim().replace(/"/g, ''),
             complete: (results: any) => {
                 const records: TankRecord[] = [];
 
                 results.data.forEach((row: any) => {
-                    // Colunas possíveis para Hora e Volume
                     const horaStr = row['Hora'] || row['Horário'] || row['Data'] || row['Time'];
                     const volStr = row['Estoque S10 Dura+'] || row['Tanque 1 - S10'] || row['Volume'] || row['Estoque'];
 
                     if (horaStr && volStr) {
                         try {
-                            // CORREÇÃO 1: Parsing de Data Robusto
                             const parts = horaStr.split(' ');
                             if(parts.length < 2) return;
 
@@ -68,17 +66,13 @@ export const parseTankFile = (file: File): Promise<TankRecord[]> => {
                             const isoDate = `${ano}-${mes}-${dia}T${timePart}`;
                             const ts = new Date(isoDate).getTime();
 
-                            // CORREÇÃO 2: Respeitar o Ponto Decimal
-                            // Antes removíamos o ponto, agora mantemos. Apenas trocamos vírgula por ponto se houver.
-                            // Removemos " l" ou " L" se tiver unidade
                             let cleanVolStr = String(volStr).replace(/[lL]\s*$/, '').trim();
-
-                            // Se tiver vírgula, troca por ponto.
                             cleanVolStr = cleanVolStr.replace(',', '.');
 
                             const volClean = parseFloat(cleanVolStr);
 
-                            if (!isNaN(ts) && !isNaN(volClean)) {
+                            // VALIDAÇÃO 1: Ignora níveis 0 (Falhas do sensor do tanque)
+                            if (!isNaN(ts) && !isNaN(volClean) && volClean > 0) {
                                 records.push({ timestamp: ts, volume: volClean, rawDate: horaStr });
                             }
                         } catch (err) {
@@ -87,7 +81,6 @@ export const parseTankFile = (file: File): Promise<TankRecord[]> => {
                     }
                 });
 
-                // Ordena por horário crescente para facilitar a busca
                 records.sort((a, b) => a.timestamp - b.timestamp);
                 resolve(records);
             },
@@ -98,32 +91,26 @@ export const parseTankFile = (file: File): Promise<TankRecord[]> => {
 
 // --- LÓGICA DE CONCILIAÇÃO (MATCH) ---
 export const reconciliateData = (wlnData: any[], tankData: TankRecord[]) => {
-    const processedIDs = new Set<string>(); // Para evitar duplicidade
+    const processedIDs = new Set<string>();
     const results: any[] = [];
 
-    // Filtra apenas linhas WLN válidas com ID
     const validRows = wlnData.filter(row => row.upar0 && Number(row.upar0) > 0);
 
     validRows.forEach(row => {
         const idOperacao = String(row.upar0);
 
-        // CORREÇÃO 3: Remover Duplicidade
-        // Se já processamos esse ID, pulamos (pegamos apenas o primeiro registro encontrado na ordem do arquivo)
         if (processedIDs.has(idOperacao)) return;
         processedIDs.add(idOperacao);
 
-        // Horários
         const startTs = String(row.upar3).length > 11 ? Number(row.upar3) : Number(row.upar3) * 1000;
 
         let endTs = 0;
         if (row.upar5 && Number(row.upar5) > 0) {
             endTs = String(row.upar5).length > 11 ? Number(row.upar5) : Number(row.upar5) * 1000;
         } else {
-            // Se não tiver data final, chuta 4 minutos (tempo médio de um abastecimento de caminhão)
             endTs = startTs + (4 * 60 * 1000);
         }
 
-        // Busca Nível do Tanque
         const tankStart = findClosestRecord(tankData, startTs);
         const tankEnd = findClosestRecord(tankData, endTs);
 
@@ -135,11 +122,8 @@ export const reconciliateData = (wlnData: any[], tankData: TankRecord[]) => {
             nivelInicial = tankStart.volume;
             nivelFinal = tankEnd.volume;
 
-            // CORREÇÃO 4: Lógica do Tanque (Tanque desce quando abastece)
-            // Consumo = Inicial (Maior) - Final (Menor)
             volumeCalculado = nivelInicial - nivelFinal;
 
-            // Tratamento de ruído/abastecimento do tanque (valor negativo)
             if (volumeCalculado < 0) volumeCalculado = 0;
         }
 
@@ -151,18 +135,16 @@ export const reconciliateData = (wlnData: any[], tankData: TankRecord[]) => {
             'Veículo (Cartão)': row.upar1 || '',
             'Frentista': row.upar2 || '',
 
-            // Volume calculado com precisão de 2 casas
             'Volume (L)': Number(volumeCalculado.toFixed(2)),
 
-            // Campos para conferência visual
             'Tanque Inicial': nivelInicial,
             'Tanque Final': nivelFinal,
-
             'Odômetro': row.upar10 || '-',
 
-            // Zera encerrantes de bomba (Modo Manual)
-            'Encerrante Inicial': 0,
-            'Encerrante Final': 0,
+            // Pega o valor real enviado pela telemetria
+            'Encerrante Inicial Bruto': Number(row.upar4) || 0,
+            'Encerrante Final Bruto': Number(row.upar6) || 0,
+
             'Tipo': 'Conciliado'
         });
     });
@@ -170,7 +152,6 @@ export const reconciliateData = (wlnData: any[], tankData: TankRecord[]) => {
     return results;
 };
 
-// Auxiliar: Encontrar registro de tanque mais próximo
 const findClosestRecord = (records: TankRecord[], targetTs: number): TankRecord | null => {
     if (records.length === 0) return null;
     return records.reduce((prev, curr) => {
@@ -193,7 +174,7 @@ export const processLogFile = (data: any[], mode: string, extraParams: any = {})
     }
 };
 
-// --- MODOS ANTIGOS (Mantidos) ---
+// --- MODOS ANTIGOS ---
 const processNormalSupply = (data: any[]) => {
     const result: any[] = [];
     const processedSignatures = new Set();
@@ -213,8 +194,8 @@ const processNormalSupply = (data: any[]) => {
                     'Veículo (Cartão)': row.upar1,
                     'Frentista': row.upar2,
                     'Volume (L)': vol,
-                    'Encerrante Inicial': row.upar4,
-                    'Encerrante Final': row.upar6,
+                    'Encerrante Inicial Bruto': row.upar4,
+                    'Encerrante Final Bruto': row.upar6,
                     'Odômetro': row.upar10 || '-',
                     'Tipo': 'Normal'
                 });
@@ -249,15 +230,14 @@ const processLockedID = (data: any[], startIdInput: number) => {
             'Data Final': formatUnixDate(item.row.upar5),
             'Veículo': item.row.upar1,
             'Volume (L)': item.vol,
-            'Encerrante Inicial': item.row.upar4,
-            'Encerrante Final': item.row.upar6,
+            'Encerrante Inicial Bruto': item.row.upar4,
+            'Encerrante Final Bruto': item.row.upar6,
             'Status': 'Recuperado'
         };
     });
 };
 
 const processManualTranscript = (data: any[]) => {
-    // Apenas para mostrar tudo no modo manual simples (sem tanque)
     return data
         .filter(row => row.upar0)
         .map(row => {
@@ -274,8 +254,8 @@ const processManualTranscript = (data: any[]) => {
                 'Veículo (Cartão)': row.upar1 || '',
                 'Frentista': row.upar2 || '',
                 'Volume (L)': vol,
-                'Encerrante Inicial': row.upar4 || 0,
-                'Encerrante Final': row.upar6 || 0,
+                'Encerrante Inicial Bruto': row.upar4 || 0,
+                'Encerrante Final Bruto': row.upar6 || 0,
                 'Odômetro': row.upar10 || '-',
                 'Tipo': 'Manual'
             };
@@ -284,11 +264,10 @@ const processManualTranscript = (data: any[]) => {
 
 // --- FORMATADOR EXCEL FINAL ---
 export const formatForExcel = (data: any[]) => {
-    // CORREÇÃO 5: Ordenação Decrescente (Mais novo primeiro)
     const sortedData = [...data].sort((a, b) => {
         const timeA = a.originalTimestamp || 0;
         const timeB = b.originalTimestamp || 0;
-        return timeB - timeA; // Invertido: B - A
+        return timeB - timeA;
     });
 
     return sortedData.map((item) => {
@@ -305,11 +284,8 @@ export const formatForExcel = (data: any[]) => {
             if (parts.length > 1) horaFim = parts[1];
         }
 
-        // Se tem volume conciliado, usa ele.
-        // Importante: Não multiplicamos encerrante por 10 no modo conciliado para não confundir
-        // Mas se você quiser manter o padrão x10, podemos manter.
-        const medidorIni = (item['Encerrante Inicial'] || 0) * 10;
-        const medidorFim = (item['Encerrante Final'] || 0) * 10;
+        const medidorIni = Number(item['Encerrante Inicial Bruto'] || item['Encerrante Inicial'] || 0);
+        const medidorFim = Number(item['Encerrante Final Bruto'] || item['Encerrante Final'] || 0);
 
         return {
             raw: item,
