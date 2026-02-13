@@ -24,39 +24,62 @@ function App() {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [pumpName, setPumpName] = useState("");
 
-    // --- MANIPULAÇÃO EXCEL ---
+// --- MANIPULAÇÃO EXCEL (CLONE EXATO DO ARQUIVO MANUAL) ---
     const createWorkbook = (nomeBombaBruto: string) => {
         const cleanData = formatForExcel(processedData);
         if (cleanData.length === 0) return null;
 
         const nomeBomba = nomeBombaBruto.trim();
+
+        // Cabeçalhos (Ajustado para 1e-05 conforme seu arquivo manual original)
         const headers = [
             "Bomba", "Hora Inicio", "Hora Fim", "Medidor",
             "Encerrante inicial m³", "Encerrante Inicial", "Encerrante Final",
-            "Litros", "Placa", "0,00001", "ID", "Frentista", "Odometro"
+            "Litros", "Placa", "1e-05", "ID", "Frentista", "Odometro"
         ];
 
         const sheetData: any[][] = [];
         sheetData.push(headers);
 
-        // SETUP LINHA 2
-        // Se for conciliado, medidor é 0, então setup é 0
+        // --- SETUP LINHA 2 (O SEGREDO ESTÁ AQUI) ---
+        // A linha 2 DEVE ter a coluna Bomba vazia e Litros = 0 para o robô da plataforma não bugar
         const medidorInicialDia = cleanData[0].medidorInicial || 0;
-        const m3Inicial = medidorInicialDia / 100000;
 
-        const row2 = [nomeBomba, "", "", medidorInicialDia, m3Inicial, "", "", "", "", "", "", "", "", ""];
+        const row2 = [
+            "",                 // A: Bomba (DEVE SER VAZIO NA LINHA 2)
+            "",                 // B: Hora Inicio
+            "",                 // C: Hora Fim
+            medidorInicialDia,  // D: Medidor
+            "",                 // E: Encerrante m3 (DEVE SER VAZIO NA LINHA 2)
+            null,               // F: Encerrante Inicial
+            null,               // G: Encerrante Final
+            0,                  // H: Litros (DEVE SER ZERO NA LINHA 2)
+            "",                 // I: Placa
+            "",                 // J: 1e-05
+            "",                 // K: ID
+            "",                 // L: Frentista
+            ""                  // M: Odometro
+        ];
         sheetData.push(row2);
 
+        // --- DADOS (LINHA 3 em diante) ---
         cleanData.forEach((item) => {
             const isConciliado = currentMode === 'transcricao' && item.volumeConciliado !== undefined;
 
             const row = [
-                nomeBomba, item.horaInicio, item.horaFim, item.medidorFinal,
+                nomeBomba,
+                item.horaInicio,
+                item.horaFim,
+                item.medidorFinal,
+                "", // m3 vazio
+                isConciliado ? item.raw['Tanque Inicial'] : null,
+                isConciliado ? item.raw['Tanque Final'] : null,
+                isConciliado ? item.volumeConciliado : null,
+                item.placa,
                 "",
-                isConciliado ? item.raw['Tanque Inicial'] : null, // Apenas visual, coluna F
-                isConciliado ? item.raw['Tanque Final'] : null,   // Apenas visual, coluna G
-                isConciliado ? item.volumeConciliado : null,      // COLUNA H: LITROS CALCULADOS
-                item.placa, "", item.id, item.frentista, item.odometro
+                item.id,
+                item.frentista,
+                item.odometro
             ];
             sheetData.push(row);
         });
@@ -64,10 +87,6 @@ function App() {
         const ws = XLSX.utils.aoa_to_sheet(sheetData);
 
         // INJEÇÃO DE FÓRMULAS
-        // Se for Transcrição/Conciliação, NÃO colocamos fórmula em Litros (H), pois o valor é fixo calculado.
-        // Colocamos fórmula apenas nas outras colunas se necessário, ou deixamos estático.
-        // Para simplificar: No modo conciliação, deixamos os valores estáticos (sem fórmula excel).
-
         if (currentMode !== 'transcricao') {
             for (let i = 2; i < sheetData.length; i++) {
                 const linhaExcel = i + 1;
@@ -76,14 +95,11 @@ function App() {
                 const cellG = XLSX.utils.encode_cell({ r: i, c: 6 }); ws[cellG] = { t: 'n', f: `D${linhaExcel}` };
                 const cellH = XLSX.utils.encode_cell({ r: i, c: 7 }); ws[cellH] = { t: 'n', f: `(G${linhaExcel}-F${linhaExcel})*0.01` };
             }
-        } else {
-            // Ajuste de largura visual para modo conciliado
-            // Se quiser mostrar cabeçalhos diferentes ou avisos, pode fazer aqui
         }
 
-        ws['!cols'] = [{ wch: 30 }, { wch: 12 }, { wch: 12 }, { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 15 }, { wch: 20 }, { wch: 10 }];
+        ws['!cols'] = [{ wch: 45 }, { wch: 12 }, { wch: 12 }, { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 15 }, { wch: 20 }, { wch: 10 }];
 
-        // Nome Aba
+        // Nome Aba (Data Exata)
         let nomeDaAba = "Abastecimentos";
         if (processedData.length > 0 && processedData[0].originalTimestamp) {
             const d = new Date(processedData[0].originalTimestamp);
