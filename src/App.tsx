@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import Papa from 'papaparse';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
+import { saveAs } from 'file-saver';
 import { toast, Toaster } from 'sonner';
 import { ArrowLeft, Download, FileSpreadsheet, Settings, X, Fuel, Edit3 } from 'lucide-react';
 
-import { processLogFile, processWlnFile, formatForExcel, parseTankFile, reconciliateData } from './utils/processors';
+import { processLogFile, processWlnFile, parseTankFile, reconciliateData } from './utils/processors';
 import { ModeSelector } from './components/ModeSelector';
 import { FileUpload } from './components/FileUpload';
 
@@ -18,12 +19,8 @@ function App() {
     const [tankFile, setTankFile] = useState<File | null>(null);
 
     const [isModalOpen, setIsModalOpen] = useState(false);
-
     const [pumpName, setPumpName] = useState("");
     const [fileNameClient, setFileNameClient] = useState("");
-
-    // Guarda o arquivo molde
-    const [templateFile, setTemplateFile] = useState<File | null>(null);
 
     const handleRowEdit = (index: number, field: string, value: string) => {
         const newData = [...processedData];
@@ -35,137 +32,96 @@ function App() {
         if (processedData.length > 0) {
             setPumpName("");
             setFileNameClient("");
-            setTemplateFile(null);
             setIsModalOpen(true);
         }
     };
 
-    // --- A MÁGICA DA INJEÇÃO CIRÚRGICA ---
+    // --- MÁGICA DO MOLDE INTERNO COM EXCELJS ---
     const confirmDownload = async () => {
         if (!pumpName.trim() || !fileNameClient.trim()) {
             toast.error("Preencha o Nome da Bomba e o Código do Cliente!");
             return;
         }
-        if (!templateFile) {
-            toast.error("Você precisa enviar a Planilha Molde para gerar o arquivo!");
-            return;
-        }
 
         try {
-            // 1. Lê o Molde preservando TUDO (Fórmulas, Cores, Dicionários, etc)
-            const arrayBuffer = await templateFile.arrayBuffer();
-            const wb = XLSX.read(arrayBuffer, { type: 'array', cellStyles: true, cellFormula: true, cellHTML: false });
+            // Busca o molde na pasta public
+            const response = await fetch('/Molde_Vazio.xlsx');
+            if (!response.ok) throw new Error("Molde não encontrado.");
+            const arrayBuffer = await response.arrayBuffer();
 
-            const wsName = wb.SheetNames[0];
-            const ws = wb.Sheets[wsName];
+            const workbook = new ExcelJS.Workbook();
+            await workbook.xlsx.load(arrayBuffer);
+            const ws = workbook.worksheets[0]; // Planilha 1
 
-            const cleanData = formatForExcel(processedData);
-
-            let medidorInicialDia = 0;
-            for (const item of cleanData) {
-                if (item.medidorInicial > 0) {
-                    medidorInicialDia = item.medidorInicial;
-                    break;
-                }
+            let medidorCorrente = 0;
+            if (currentMode === 'transcricao') {
+                // Cascata decrescente para D2
+                medidorCorrente = 0;
+            } else {
+                // Pegar o primeiro medidor do modo normal
+                const first = processedData.find(d => Number(d['Encerrante Inicial Bruto']) > 0);
+                medidorCorrente = first ? Number(first['Encerrante Inicial Bruto']) : 0;
             }
 
-            // FUNÇÃO CIRÚRGICA: Atualiza apenas uma célula específica sem tocar no resto da linha
-            const updateCell = (r: number, c: number, val: any) => {
-                if (val === undefined || val === null || val === "") return;
+            // Injeta o D2 (Setup)
+            ws.getCell('D2').value = medidorCorrente;
 
-                const cellRef = XLSX.utils.encode_cell({ r, c });
-                let cell = ws[cellRef];
-
-                // Se a célula não existe no molde, nós a criamos
-                if (!cell) {
-                    cell = {};
-                    ws[cellRef] = cell;
-                }
-
-                // Injeta Número ou Texto
-                if (typeof val === 'number' && !isNaN(val)) {
-                    cell.t = 'n';
-                    cell.v = val;
-                    delete cell.w; // Limpa o cache visual para o Excel recalcular
-                } else {
-                    cell.t = 's';
-                    cell.v = String(val).trim();
-                    delete cell.w;
-                }
-            };
-
-            // INJEÇÃO DA LINHA 2 (r=1)
-            updateCell(1, 3, medidorInicialDia); // D2: Medidor
-
-            let medidorCorrente = medidorInicialDia;
-
-            const formatTime = (timeStr: string) => {
-                if (!timeStr || timeStr === '-') return "";
-                const parts = timeStr.split(':');
+            const formatTime = (dateStr: string) => {
+                if (!dateStr || dateStr === '-') return "";
+                const timePart = dateStr.split(' ')[1] || dateStr;
+                const parts = timePart.split(':');
                 if (parts.length >= 2) return `${parts[0]}:${parts[1]}`;
-                return timeStr;
+                return dateStr;
             };
 
-            // INJEÇÃO DOS DADOS (A partir da Linha 3 | r=2)
-            cleanData.forEach((item, index) => {
-                const isConciliado = currentMode === 'transcricao' && item.volumeConciliado !== undefined;
+            processedData.forEach((item, index) => {
+                const r = index + 3; // Começa na linha 3 do Excel
+                const row = ws.getRow(r);
 
-                let medidorCol;
-
-                if (isConciliado) {
-                    const encFim = medidorCorrente + Math.round(item.volumeConciliado * 100);
-                    medidorCol = encFim;
-                    medidorCorrente = encFim;
+                let medidorCol = 0;
+                if (currentMode === 'transcricao') {
+                    // Cálculo da cascata decrescente
+                    medidorCorrente += Math.round((item['Volume (L)'] || 0) * 100);
+                    medidorCol = medidorCorrente;
                 } else {
-                    medidorCol = item.medidorFinal;
+                    medidorCol = Number(item['Encerrante Final Bruto'] || 0);
                 }
 
-                const R = index + 2; // R=2 é a linha 3 no Excel
+                // INJEÇÃO CIRÚRGICA APENAS DOS VALORES. F, G e H FICAM INTACTOS!
+                row.getCell(1).value = pumpName.trim();                          // A: Bomba
+                row.getCell(2).value = formatTime(item['Data'] || item['Data Inicial']); // B: Inicio
+                row.getCell(3).value = formatTime(item['Data Final']);           // C: Fim
+                row.getCell(4).value = medidorCol;                               // D: Medidor
 
-                // Injetamos apenas as colunas de dados cruas!
-                updateCell(R, 0, pumpName.trim());                 // Coluna A (Bomba)
-                updateCell(R, 1, formatTime(item.horaInicio));     // Coluna B (Hora Inicio)
-                updateCell(R, 2, formatTime(item.horaFim));        // Coluna C (Hora Fim)
-                updateCell(R, 3, medidorCol);                      // Coluna D (Medidor)
+                row.getCell(9).value = item['Veículo (Cartão)'] || item['Veículo'] || ''; // I: Placa
 
-                // PULA E, F, G, H (Deixa o Molde calcular)
+                const idVal = Number(item['ID Operação'] || item['ID Original (Travado)']);
+                row.getCell(11).value = isNaN(idVal) ? idVal : idVal;            // K: ID
 
-                updateCell(R, 8, item.placa);                      // Coluna I (Placa)
+                row.getCell(12).value = item['Frentista'] || '';                 // L: Frentista
+                row.getCell(13).value = item['Odômetro'] !== '-' ? Number(item['Odômetro']) : ''; // M: Odo
 
-                // PULA J (1e-05)
-
-                // ID (Coluna K) - Tenta salvar como número puro sem formatação, se falhar salva como texto
-                const idVal = Number(item.id);
-                updateCell(R, 10, isNaN(idVal) ? item.id : idVal);
-
-                updateCell(R, 11, item.frentista);                 // Coluna L (Frentista)
-                updateCell(R, 12, item.odometro);                  // Coluna M (Odometro)
+                row.commit(); // Salva a linha no buffer
             });
 
-            // Atualiza a "Área Ativa" da planilha para que o Excel saiba que foram adicionadas linhas novas
-            const range = XLSX.utils.decode_range(ws['!ref'] || "A1:M1");
-            const maxRow = cleanData.length + 1;
-            if (maxRow > range.e.r) range.e.r = maxRow;
-            if (12 > range.e.c) range.e.c = 12;
-            ws['!ref'] = XLSX.utils.encode_range(range);
-
+            // Montagem do nome do arquivo
             const d = processedData[0]?.originalTimestamp ? new Date(processedData[0].originalTimestamp) : new Date();
             const dia = String(d.getDate()).padStart(2,'0');
             const mes = String(d.getMonth()+1).padStart(2,'0');
             const ano = d.getFullYear();
-
             const clientCode = fileNameClient.trim().replace(/\s+/g, '');
             const nomeArquivo = `Planilha insercao de abastecimento_S10_${clientCode}_${dia}${mes}${ano}.xlsx`;
 
-            // Salva o arquivo preservando toda a infraestrutura do Excel e do Molde
-            XLSX.writeFile(wb, nomeArquivo, { compression: true, bookSST: true });
+            // Exportação limpa
+            const buffer = await workbook.xlsx.writeBuffer();
+            saveAs(new Blob([buffer]), nomeArquivo);
 
-            toast.success(`Planilha gerada com sucesso! Fórmulas preservadas.`);
+            toast.success(`Planilha gerada com sucesso a partir do molde!`);
             setIsModalOpen(false);
 
         } catch (error: any) {
             console.error(error);
-            toast.error("Erro ao processar o arquivo Molde. Verifique se é uma planilha válida.");
+            toast.error("Erro ao gerar. Certifique-se de que o 'Molde_Vazio.xlsx' está na pasta 'public'.");
         }
     };
 
@@ -183,12 +139,8 @@ function App() {
 
             const mergedData = reconciliateData(wlnRaw, tankRaw);
             setProcessedData(mergedData);
-
-            if (mergedData.length > 0) {
-                toast.success(`Conciliação concluída! Edite as placas se necessário.`);
-            } else {
-                toast.warning("Nenhum abastecimento encontrado no cruzamento.");
-            }
+            if (mergedData.length > 0) toast.success(`Conciliação concluída! Edite as placas se necessário.`);
+            else toast.warning("Nenhum abastecimento encontrado no cruzamento.");
         } catch (error: any) {
             console.error(error);
             toast.error("Erro na conciliação: " + error.message);
@@ -201,13 +153,11 @@ function App() {
             const name = file.name.toLowerCase();
             if (name.endsWith('.wln') || name.endsWith('.txt')) {
                 setWlnFile(file);
-                toast.info("Arquivo WLN (Placas) carregado!");
+                toast.info("Arquivo WLN carregado!");
             } else if (name.endsWith('.csv') || name.endsWith('.xlsx')) {
                 setTankFile(file);
-                toast.info("Arquivo de Tanque (Níveis) carregado!");
-            } else {
-                toast.warning("Formato desconhecido.");
-            }
+                toast.info("Arquivo de Tanque carregado!");
+            } else toast.warning("Formato desconhecido.");
             return;
         }
 
@@ -225,7 +175,7 @@ function App() {
                 if (data.length > 0) {
                     const cleanData = processLogFile(data, currentMode || 'normal', { startId: Number(startIdInput) });
                     setProcessedData(cleanData.length > 0 ? cleanData : data);
-                    toast.success(`${cleanData.length || data.length} registros. Edite as placas abaixo.`);
+                    toast.success(`${cleanData.length || data.length} registros processados.`);
                 }
             } else {
                 Papa.parse(file, {
@@ -233,9 +183,9 @@ function App() {
                     complete: (res: any) => {
                         const clean = processLogFile(res.data, currentMode || 'normal', { startId: Number(startIdInput) });
                         setProcessedData(clean);
-                        toast.success(`${clean.length} registros. Edite as placas abaixo.`);
+                        toast.success(`${clean.length} registros processados.`);
                     },
-                    error: (err: any) => { toast.error("Erro CSV: " + err.message); setIsProcessing(false); }
+                    error: (err: any) => { toast.error("Erro CSV."); setIsProcessing(false); }
                 });
             }
         } catch (e) { toast.error("Erro ao processar."); }
@@ -266,7 +216,7 @@ function App() {
                             {currentMode === 'transcricao' ? (
                                 <div className="space-y-6">
                                     <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl text-orange-800 text-sm mb-6">
-                                        <strong>Conciliação Automática:</strong> Envie o arquivo da Placa (WLN) e o do Nível (CSV) para o sistema cruzar os horários.
+                                        <strong>Conciliação Automática:</strong> Envie o arquivo da Placa (WLN) e o do Nível (CSV) para cruzar os horários.
                                     </div>
 
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -282,10 +232,7 @@ function App() {
                                     </div>
 
                                     {wlnFile && tankFile && processedData.length === 0 && (
-                                        <button
-                                            onClick={handleProcessConciliation}
-                                            className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-blue-200 transition-all active:scale-95"
-                                        >
+                                        <button onClick={handleProcessConciliation} className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-blue-200 transition-all active:scale-95">
                                             Processar Conciliação
                                         </button>
                                     )}
@@ -301,8 +248,6 @@ function App() {
                                 </>
                             )}
 
-                            {isProcessing && <div className="mt-8 text-center text-blue-600 animate-pulse">Cruzando dados...</div>}
-
                             {processedData.length > 0 && (
                                 <div className="mt-8 animate-fade-in-up">
                                     <div className="flex items-center justify-between mb-4 bg-green-50 p-4 rounded-xl border border-green-100">
@@ -310,7 +255,7 @@ function App() {
                                             <div className="p-2 bg-green-100 rounded-lg text-green-600"><FileSpreadsheet className="w-6 h-6" /></div>
                                             <div>
                                                 <p className="font-bold text-green-900">Pronto para Exportar!</p>
-                                                <p className="text-sm text-green-700">Edite as placas e baixe a planilha injetando no seu molde.</p>
+                                                <p className="text-sm text-green-700">O Excel vai usar o Molde_Vazio automaticamente.</p>
                                             </div>
                                         </div>
                                         <button onClick={handleDownloadClick} className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl font-bold flex items-center shadow-lg transition-all active:scale-95">
@@ -325,7 +270,7 @@ function App() {
                                                 <th className="px-4 py-3 whitespace-nowrap">Data</th>
                                                 <th className="px-4 py-3 whitespace-nowrap">ID Operação</th>
                                                 <th className="px-4 py-3 whitespace-nowrap text-blue-600 flex items-center gap-1"><Edit3 className="w-4 h-4"/> Placa</th>
-                                                <th className="px-4 py-3 whitespace-nowrap">Volume (L)</th>
+                                                <th className="px-4 py-3 whitespace-nowrap text-blue-600 flex items-center gap-1"><Edit3 className="w-4 h-4"/> Volume (L)</th>
                                                 <th className="px-4 py-3 whitespace-nowrap">Frentista</th>
                                                 <th className="px-4 py-3 whitespace-nowrap">Odômetro</th>
                                             </tr>
@@ -337,8 +282,7 @@ function App() {
                                                     <td className="px-4 py-3 whitespace-nowrap font-mono">{row['ID Operação'] || row['ID Original (Travado)']}</td>
                                                     <td className="px-4 py-2">
                                                         <input
-                                                            type="text"
-                                                            placeholder="EX: ABC1234"
+                                                            type="text" placeholder="EX: ABC1234"
                                                             className="border border-blue-200 rounded-lg px-3 py-1.5 w-28 focus:ring-2 focus:ring-blue-500 outline-none uppercase font-bold text-gray-700 bg-white shadow-sm"
                                                             value={row['Veículo (Cartão)'] ?? row['Veículo'] ?? ''}
                                                             onChange={(e) => {
@@ -347,8 +291,13 @@ function App() {
                                                             }}
                                                         />
                                                     </td>
-                                                    <td className="px-4 py-3 font-bold whitespace-nowrap text-gray-700">
-                                                        {row['Volume (L)']}
+                                                    <td className="px-4 py-2">
+                                                        <input
+                                                            type="number"
+                                                            className="border border-blue-200 rounded-lg px-3 py-1.5 w-24 focus:ring-2 focus:ring-blue-500 outline-none font-bold text-gray-700 bg-white shadow-sm"
+                                                            value={row['Volume (L)']}
+                                                            onChange={(e) => handleRowEdit(i, 'Volume (L)', Number(e.target.value))}
+                                                        />
                                                     </td>
                                                     <td className="px-4 py-3 whitespace-nowrap">{row['Frentista']}</td>
                                                     <td className="px-4 py-3 whitespace-nowrap">{row['Odômetro']}</td>
@@ -363,54 +312,24 @@ function App() {
                             {isModalOpen && (
                                 <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
                                     <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-100">
-                                        <div className="flex justify-between items-center mb-4">
-                                            <h3 className="text-xl font-bold text-gray-800">Identificar e Exportar</h3>
+                                        <div className="flex justify-between items-center mb-6">
+                                            <h3 className="text-xl font-bold text-gray-800">Informações da Base</h3>
                                             <button onClick={() => setIsModalOpen(false)} className="p-1 hover:bg-gray-100 rounded-full text-gray-500"><X className="w-6 h-6" /></button>
                                         </div>
 
-                                        <div className="mb-4 bg-blue-50 p-4 rounded-xl border border-blue-100">
-                                            <label className="block text-sm font-bold text-blue-800 mb-2">
-                                                1. Planilha Molde (Obrigatório)
-                                            </label>
-                                            <input
-                                                type="file"
-                                                accept=".xlsx"
-                                                className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 outline-none"
-                                                onChange={(e) => setTemplateFile(e.target.files?.[0] || null)}
-                                            />
-                                            <p className="text-xs text-blue-600 mt-2 leading-tight">Certifique-se de que o molde tenha as fórmulas puxadas para baixo o suficiente.</p>
-                                        </div>
-
                                         <div className="mb-4">
-                                            <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                                2. Nome da Bomba (Vai dentro da planilha)
-                                            </label>
-                                            <input
-                                                type="text"
-                                                placeholder="Ex: Bomba SMARTANK 641 (Grupo Roça...)"
-                                                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 outline-none"
-                                                value={pumpName}
-                                                onChange={(e) => setPumpName(e.target.value)}
-                                            />
+                                            <label className="block text-sm font-semibold text-gray-700 mb-2">Nome da Bomba</label>
+                                            <input type="text" autoFocus placeholder="Ex: Bomba SMARTANK 641..." className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 outline-none" value={pumpName} onChange={(e) => setPumpName(e.target.value)} />
                                         </div>
 
-                                        <div className="mb-6">
-                                            <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                                3. Código do Cliente (Vai no nome do arquivo)
-                                            </label>
-                                            <input
-                                                type="text"
-                                                placeholder="Ex: roca644"
-                                                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 outline-none"
-                                                value={fileNameClient}
-                                                onChange={(e) => setFileNameClient(e.target.value)}
-                                                onKeyDown={(e) => e.key === 'Enter' && confirmDownload()}
-                                            />
+                                        <div className="mb-8">
+                                            <label className="block text-sm font-semibold text-gray-700 mb-2">Código do Cliente</label>
+                                            <input type="text" placeholder="Ex: roca644" className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 outline-none" value={fileNameClient} onChange={(e) => setFileNameClient(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && confirmDownload()} />
                                         </div>
 
                                         <div className="flex gap-3">
-                                            <button onClick={() => setIsModalOpen(false)} className="flex-1 px-4 py-3 rounded-xl font-semibold text-gray-600 hover:bg-gray-100">Cancelar</button>
-                                            <button onClick={confirmDownload} className="flex-1 px-4 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-lg">Injetar e Baixar</button>
+                                            <button onClick={() => setIsModalOpen(false)} className="flex-1 px-4 py-3 rounded-xl font-semibold text-gray-600 hover:bg-gray-100 transition-colors">Cancelar</button>
+                                            <button onClick={confirmDownload} className="flex-1 px-4 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-lg transition-transform active:scale-95">Gerar Arquivo</button>
                                         </div>
                                     </div>
                                 </div>
