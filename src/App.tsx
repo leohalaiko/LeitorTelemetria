@@ -161,7 +161,9 @@ function App() {
         const clientCode = fileNameClient.trim().replace(/\s+/g, '');
         const nomeArquivo = `Planilha insercao de abastecimento_S10_${clientCode}_${dia}${mes}${ano}.xlsx`;
 
-        XLSX.writeFile(wb, nomeArquivo, { compression: true });
+        // 👇 A MÁGICA ACONTECE AQUI: Adicionamos bookSST: true 👇
+        XLSX.writeFile(wb, nomeArquivo, { compression: true, bookSST: true });
+
         toast.success(`Planilha gerada com sucesso!`);
         setIsModalOpen(false);
     };
