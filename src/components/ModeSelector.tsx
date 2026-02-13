@@ -1,5 +1,5 @@
 import React from 'react';
-import { Fuel, AlertTriangle, Lock, FileWarning, FileCode, ClipboardEdit } from 'lucide-react'; // Adicionei ClipboardEdit
+import { Fuel, AlertTriangle, Lock, FileCode, ClipboardEdit } from 'lucide-react'; // Adicionei ClipboardEdit
 
 interface ModeSelectorProps {
     onSelectMode: (mode: string) => void;
