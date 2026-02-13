@@ -18,7 +18,9 @@ function App() {
     const [tankFile, setTankFile] = useState<File | null>(null);
 
     const [isModalOpen, setIsModalOpen] = useState(false);
+
     const [pumpName, setPumpName] = useState("");
+    const [fileNameClient, setFileNameClient] = useState("");
 
     const handleRowEdit = (index: number, field: string, value: string) => {
         const newData = [...processedData];
@@ -26,14 +28,12 @@ function App() {
         setProcessedData(newData);
     };
 
-    // --- MANIPULAÇÃO EXCEL (EMULANDO COMPORTAMENTO NATIVO DO MS EXCEL) ---
     const createWorkbook = (nomeBombaBruto: string) => {
         const cleanData = formatForExcel(processedData);
         if (cleanData.length === 0) return null;
 
         const nomeBomba = nomeBombaBruto.trim();
 
-        // Cabeçalhos (Idêntico ao manual)
         const headers = [
             "Bomba", "Hora Inicio", "Hora Fim", "Medidor",
             "Encerrante inicial m³", "Encerrante Inicial", "Encerrante Final",
@@ -41,23 +41,22 @@ function App() {
         ];
 
         const sheetData: any[][] = [];
-        sheetData.push(headers); // Linha 1
+        sheetData.push(headers);
 
-        // --- SETUP LINHA 2 ---
         const medidorInicialDia = cleanData[0].medidorInicial || 0;
 
         const row2 = [
-            "",                 // A: Bomba VAZIO
+            "",                 // A: Bomba (VAZIO)
             "",                 // B: Hora Inicio
             "",                 // C: Hora Fim
             medidorInicialDia,  // D: Medidor
-            "",                 // E: m3 VAZIO
-            null,               // F: Encerrante Inicial
-            null,               // G: Encerrante Final
-            0,                  // H: Litros = 0
+            "",                 // E: m3 (VAZIO)
+            "",                 // F: Encerrante Inicial
+            "",                 // G: Encerrante Final
+            0,                  // H: Litros (ZERO)
             "",                 // I: Placa
             "",                 // J: 1e-05
-            "",                 // K: ID
+            "",                 // K: ID (VAZIO)
             "",                 // L: Frentista
             ""                  // M: Odometro
         ];
@@ -65,49 +64,46 @@ function App() {
 
         let medidorCorrente = medidorInicialDia;
 
-        // --- DADOS (LINHA 3 em diante) ---
-        cleanData.forEach((item, index) => {
+        // Função para remover os segundos (Transforma "19:11:00" em "19:11")
+        const formatTime = (timeStr: string) => {
+            if (!timeStr || timeStr === '-') return "";
+            const parts = timeStr.split(':');
+            if (parts.length >= 2) return `${parts[0]}:${parts[1]}`;
+            return timeStr;
+        };
+
+        cleanData.forEach((item) => {
             const isConciliado = currentMode === 'transcricao' && item.volumeConciliado !== undefined;
 
             let encIni, encFim, litros, medidorCol;
 
-            // Pré-cálculo dos valores
+            // Matemática corrigida para divisão por 100
             if (isConciliado) {
                 encIni = medidorCorrente;
-                encFim = medidorCorrente + Math.round(item.volumeConciliado * 10);
+                encFim = medidorCorrente + Math.round(item.volumeConciliado * 100);
                 litros = item.volumeConciliado;
                 medidorCol = encFim;
                 medidorCorrente = encFim;
             } else {
                 encIni = item.medidorInicial;
                 encFim = item.medidorFinal;
-                litros = (encFim - encIni) / 10;
+                litros = (encFim - encIni) / 100;
                 medidorCol = encFim;
             }
 
             if (isNaN(litros)) litros = 0;
 
-            // A MÁGICA DE COMPATIBILIDADE ACONTECE AQUI:
-            // O Excel espera a fórmula (f) mas o robô da plataforma lê o valor em cache (v).
-            // Nós mandamos os dois na mesma célula!
-            const linhaExcel = index + 3; // Linha 3, 4, 5... (1-based para o Excel)
-            const linhaAnterior = linhaExcel - 1;
-
-            const cellF = { t: 'n', v: encIni, f: `D${linhaAnterior}` };
-            const cellG = { t: 'n', v: encFim, f: `D${linhaExcel}` };
-            const cellH = { t: 'n', v: Number(litros.toFixed(2)), f: `(G${linhaExcel}-F${linhaExcel})*0.01` };
-
             const row = [
                 nomeBomba,
-                item.horaInicio,
-                item.horaFim,
-                medidorCol,       // D: Medidor
-                "",               // E: Vazio
-                cellF,            // F: Fórmula + Valor Cacheado
-                cellG,            // G: Fórmula + Valor Cacheado
-                cellH,            // H: Fórmula + Valor Cacheado
+                formatTime(item.horaInicio),
+                formatTime(item.horaFim),
+                medidorCol,
+                "",
+                encIni,
+                encFim,
+                Number(litros.toFixed(2)),
                 item.placa,
-                "",               // J
+                "",
                 item.id,
                 item.frentista,
                 item.odometro
@@ -115,10 +111,8 @@ function App() {
             sheetData.push(row);
         });
 
-        // Converte a matriz em aba do Excel (já interpretando nossos objetos de célula customizados)
         const ws = XLSX.utils.aoa_to_sheet(sheetData);
-
-        ws['!cols'] = [{ wch: 45 }, { wch: 12 }, { wch: 12 }, { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 15 }, { wch: 20 }, { wch: 10 }];
+        ws['!cols'] = [{ wch: 50 }, { wch: 12 }, { wch: 12 }, { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 15 }, { wch: 20 }, { wch: 10 }];
 
         let nomeDaAba = "Abastecimentos";
         if (processedData.length > 0 && processedData[0].originalTimestamp) {
@@ -131,17 +125,30 @@ function App() {
         return wb;
     };
 
-    const handleDownloadClick = () => { if (processedData.length > 0) { setPumpName(""); setIsModalOpen(true); } };
+    const handleDownloadClick = () => {
+        if (processedData.length > 0) {
+            setPumpName("");
+            setFileNameClient("");
+            setIsModalOpen(true);
+        }
+    };
 
     const confirmDownload = () => {
-        if (!pumpName.trim()) { toast.error("Nome da bomba obrigatório."); return; }
+        if (!pumpName.trim() || !fileNameClient.trim()) {
+            toast.error("Preencha todos os campos!");
+            return;
+        }
         const wb = createWorkbook(pumpName);
         if (!wb) return;
 
         const d = processedData[0]?.originalTimestamp ? new Date(processedData[0].originalTimestamp) : new Date();
-        const nomeArquivo = `Planilha S10_${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}.${d.getFullYear()}.xlsx`;
+        const dia = String(d.getDate()).padStart(2,'0');
+        const mes = String(d.getMonth()+1).padStart(2,'0');
+        const ano = d.getFullYear();
 
-        // Mantemos a compressão para ficar idêntico a um arquivo MS Office nativo
+        const clientCode = fileNameClient.trim().replace(/\s+/g, '');
+        const nomeArquivo = `Planilha insercao de abastecimento_S10_${clientCode}_${dia}${mes}${ano}.xlsx`;
+
         XLSX.writeFile(wb, nomeArquivo, { compression: true });
         toast.success(`Planilha gerada com sucesso!`);
         setIsModalOpen(false);
@@ -341,8 +348,36 @@ function App() {
                             {isModalOpen && (
                                 <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
                                     <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-100">
-                                        <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold text-gray-800">Identificar Cliente</h3><button onClick={() => setIsModalOpen(false)} className="p-1 hover:bg-gray-100 rounded-full text-gray-500"><X className="w-6 h-6" /></button></div>
-                                        <div className="mb-6"><label className="block text-sm font-semibold text-gray-700 mb-2">Nome da Bomba</label><input type="text" autoFocus placeholder="Ex: Bomba 01 - Matriz" className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 outline-none" value={pumpName} onChange={(e) => setPumpName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && confirmDownload()} /></div>
+                                        <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold text-gray-800">Identificar Cliente e Base</h3><button onClick={() => setIsModalOpen(false)} className="p-1 hover:bg-gray-100 rounded-full text-gray-500"><X className="w-6 h-6" /></button></div>
+
+                                        <div className="mb-4">
+                                            <label className="block text-sm font-semibold text-gray-700 mb-2">
+                                                Nome da Bomba (Vai dentro da planilha)
+                                            </label>
+                                            <input
+                                                type="text"
+                                                autoFocus
+                                                placeholder="Ex: Bomba SMARTANK 641 (Grupo Roça...)"
+                                                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 outline-none"
+                                                value={pumpName}
+                                                onChange={(e) => setPumpName(e.target.value)}
+                                            />
+                                        </div>
+
+                                        <div className="mb-6">
+                                            <label className="block text-sm font-semibold text-gray-700 mb-2">
+                                                Código do Cliente (Vai no nome do arquivo)
+                                            </label>
+                                            <input
+                                                type="text"
+                                                placeholder="Ex: roca644"
+                                                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 outline-none"
+                                                value={fileNameClient}
+                                                onChange={(e) => setFileNameClient(e.target.value)}
+                                                onKeyDown={(e) => e.key === 'Enter' && confirmDownload()}
+                                            />
+                                        </div>
+
                                         <div className="flex gap-3"><button onClick={() => setIsModalOpen(false)} className="flex-1 px-4 py-3 rounded-xl font-semibold text-gray-600 hover:bg-gray-100">Cancelar</button><button onClick={confirmDownload} className="flex-1 px-4 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-lg">Gerar Arquivo</button></div>
                                     </div>
                                 </div>
