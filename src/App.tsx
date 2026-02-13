@@ -4,9 +4,7 @@ import * as XLSX from 'xlsx';
 import { toast, Toaster } from 'sonner';
 import { ArrowLeft, Download, FileSpreadsheet, Settings, X, Fuel, Edit3 } from 'lucide-react';
 
-// Importação das funções
 import { processLogFile, processWlnFile, formatForExcel, parseTankFile, reconciliateData } from './utils/processors';
-
 import { ModeSelector } from './components/ModeSelector';
 import { FileUpload } from './components/FileUpload';
 
@@ -16,29 +14,26 @@ function App() {
     const [isProcessing, setIsProcessing] = useState(false);
     const [startIdInput, setStartIdInput] = useState<string>("");
 
-    // ESTADOS NOVOS PARA CONCILIAÇÃO
     const [wlnFile, setWlnFile] = useState<File | null>(null);
     const [tankFile, setTankFile] = useState<File | null>(null);
 
-    // ESTADOS PARA O MODAL
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [pumpName, setPumpName] = useState("");
 
-    // --- FUNÇÃO PARA EDITAR LINHAS DIRETO NO SITE ---
-    const handleRowEdit = (index: number, field: string, value: string | number) => {
+    const handleRowEdit = (index: number, field: string, value: string) => {
         const newData = [...processedData];
         newData[index] = { ...newData[index], [field]: value };
         setProcessedData(newData);
     };
 
-    // --- MANIPULAÇÃO EXCEL (CLONE EXATO DO ARQUIVO MANUAL) ---
+    // --- MANIPULAÇÃO EXCEL (EMULANDO COMPORTAMENTO NATIVO DO MS EXCEL) ---
     const createWorkbook = (nomeBombaBruto: string) => {
         const cleanData = formatForExcel(processedData);
         if (cleanData.length === 0) return null;
 
         const nomeBomba = nomeBombaBruto.trim();
 
-        // Cabeçalhos
+        // Cabeçalhos (Idêntico ao manual)
         const headers = [
             "Bomba", "Hora Inicio", "Hora Fim", "Medidor",
             "Encerrante inicial m³", "Encerrante Inicial", "Encerrante Final",
@@ -46,20 +41,20 @@ function App() {
         ];
 
         const sheetData: any[][] = [];
-        sheetData.push(headers);
+        sheetData.push(headers); // Linha 1
 
-        // SETUP LINHA 2
+        // --- SETUP LINHA 2 ---
         const medidorInicialDia = cleanData[0].medidorInicial || 0;
 
         const row2 = [
-            "",                 // A: Bomba VAZIA
+            "",                 // A: Bomba VAZIO
             "",                 // B: Hora Inicio
             "",                 // C: Hora Fim
             medidorInicialDia,  // D: Medidor
-            "",                 // E: Encerrante m3 VAZIO
+            "",                 // E: m3 VAZIO
             null,               // F: Encerrante Inicial
             null,               // G: Encerrante Final
-            0,                  // H: Litros ZERO
+            0,                  // H: Litros = 0
             "",                 // I: Placa
             "",                 // J: 1e-05
             "",                 // K: ID
@@ -68,21 +63,51 @@ function App() {
         ];
         sheetData.push(row2);
 
-        // DADOS
-        cleanData.forEach((item) => {
+        let medidorCorrente = medidorInicialDia;
+
+        // --- DADOS (LINHA 3 em diante) ---
+        cleanData.forEach((item, index) => {
             const isConciliado = currentMode === 'transcricao' && item.volumeConciliado !== undefined;
+
+            let encIni, encFim, litros, medidorCol;
+
+            // Pré-cálculo dos valores
+            if (isConciliado) {
+                encIni = medidorCorrente;
+                encFim = medidorCorrente + Math.round(item.volumeConciliado * 10);
+                litros = item.volumeConciliado;
+                medidorCol = encFim;
+                medidorCorrente = encFim;
+            } else {
+                encIni = item.medidorInicial;
+                encFim = item.medidorFinal;
+                litros = (encFim - encIni) / 10;
+                medidorCol = encFim;
+            }
+
+            if (isNaN(litros)) litros = 0;
+
+            // A MÁGICA DE COMPATIBILIDADE ACONTECE AQUI:
+            // O Excel espera a fórmula (f) mas o robô da plataforma lê o valor em cache (v).
+            // Nós mandamos os dois na mesma célula!
+            const linhaExcel = index + 3; // Linha 3, 4, 5... (1-based para o Excel)
+            const linhaAnterior = linhaExcel - 1;
+
+            const cellF = { t: 'n', v: encIni, f: `D${linhaAnterior}` };
+            const cellG = { t: 'n', v: encFim, f: `D${linhaExcel}` };
+            const cellH = { t: 'n', v: Number(litros.toFixed(2)), f: `(G${linhaExcel}-F${linhaExcel})*0.01` };
 
             const row = [
                 nomeBomba,
                 item.horaInicio,
                 item.horaFim,
-                item.medidorFinal,
-                "",
-                isConciliado ? item.raw['Tanque Inicial'] : null,
-                isConciliado ? item.raw['Tanque Final'] : null,
-                isConciliado ? item.volumeConciliado : null,
+                medidorCol,       // D: Medidor
+                "",               // E: Vazio
+                cellF,            // F: Fórmula + Valor Cacheado
+                cellG,            // G: Fórmula + Valor Cacheado
+                cellH,            // H: Fórmula + Valor Cacheado
                 item.placa,
-                "",
+                "",               // J
                 item.id,
                 item.frentista,
                 item.odometro
@@ -90,18 +115,8 @@ function App() {
             sheetData.push(row);
         });
 
+        // Converte a matriz em aba do Excel (já interpretando nossos objetos de célula customizados)
         const ws = XLSX.utils.aoa_to_sheet(sheetData);
-
-        // INJEÇÃO DE FÓRMULAS
-        if (currentMode !== 'transcricao') {
-            for (let i = 2; i < sheetData.length; i++) {
-                const linhaExcel = i + 1;
-                const linhaAnterior = linhaExcel - 1;
-                const cellF = XLSX.utils.encode_cell({ r: i, c: 5 }); ws[cellF] = { t: 'n', f: `D${linhaAnterior}` };
-                const cellG = XLSX.utils.encode_cell({ r: i, c: 6 }); ws[cellG] = { t: 'n', f: `D${linhaExcel}` };
-                const cellH = XLSX.utils.encode_cell({ r: i, c: 7 }); ws[cellH] = { t: 'n', f: `(G${linhaExcel}-F${linhaExcel})*0.01` };
-            }
-        }
 
         ws['!cols'] = [{ wch: 45 }, { wch: 12 }, { wch: 12 }, { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 15 }, { wch: 20 }, { wch: 10 }];
 
@@ -126,7 +141,8 @@ function App() {
         const d = processedData[0]?.originalTimestamp ? new Date(processedData[0].originalTimestamp) : new Date();
         const nomeArquivo = `Planilha S10_${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}.${d.getFullYear()}.xlsx`;
 
-        XLSX.writeFile(wb, nomeArquivo);
+        // Mantemos a compressão para ficar idêntico a um arquivo MS Office nativo
+        XLSX.writeFile(wb, nomeArquivo, { compression: true });
         toast.success(`Planilha gerada com sucesso!`);
         setIsModalOpen(false);
     };
@@ -272,7 +288,7 @@ function App() {
                                             <div className="p-2 bg-green-100 rounded-lg text-green-600"><FileSpreadsheet className="w-6 h-6" /></div>
                                             <div>
                                                 <p className="font-bold text-green-900">Pronto para Exportar!</p>
-                                                <p className="text-sm text-green-700">Edite as placas e volumes diretamente na tabela abaixo se precisar.</p>
+                                                <p className="text-sm text-green-700">A tabela já conta com as fórmulas nativas ocultas e compatíveis.</p>
                                             </div>
                                         </div>
                                         <button onClick={handleDownloadClick} className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl font-bold flex items-center shadow-lg transition-all active:scale-95">
@@ -280,15 +296,14 @@ function App() {
                                         </button>
                                     </div>
 
-                                    {/* TABELA TOTALMENTE EDITÁVEL */}
-                                    <div className="overflow-x-auto border border-gray-200 rounded-xl max-h-[500px] shadow-sm">
+                                    <div className="overflow-x-auto border border-gray-200 rounded-xl shadow-sm max-h-[500px]">
                                         <table className="w-full text-sm text-left relative">
                                             <thead className="bg-gray-100 text-gray-600 font-bold sticky top-0 z-10 shadow-sm">
                                             <tr>
                                                 <th className="px-4 py-3 whitespace-nowrap">Data</th>
                                                 <th className="px-4 py-3 whitespace-nowrap">ID Operação</th>
                                                 <th className="px-4 py-3 whitespace-nowrap text-blue-600 flex items-center gap-1"><Edit3 className="w-4 h-4"/> Placa</th>
-                                                <th className="px-4 py-3 whitespace-nowrap text-blue-600"><Edit3 className="w-4 h-4 inline mr-1"/> Volume (L)</th>
+                                                <th className="px-4 py-3 whitespace-nowrap">Volume (L)</th>
                                                 <th className="px-4 py-3 whitespace-nowrap">Frentista</th>
                                                 <th className="px-4 py-3 whitespace-nowrap">Odômetro</th>
                                             </tr>
@@ -310,13 +325,8 @@ function App() {
                                                             }}
                                                         />
                                                     </td>
-                                                    <td className="px-4 py-2">
-                                                        <input
-                                                            type="number"
-                                                            className="border border-blue-200 rounded-lg px-3 py-1.5 w-24 focus:ring-2 focus:ring-blue-500 outline-none font-bold text-gray-700 bg-white shadow-sm"
-                                                            value={row['Volume (L)']}
-                                                            onChange={(e) => handleRowEdit(i, 'Volume (L)', Number(e.target.value))}
-                                                        />
+                                                    <td className="px-4 py-3 font-bold whitespace-nowrap text-gray-700">
+                                                        {row['Volume (L)']}
                                                     </td>
                                                     <td className="px-4 py-3 whitespace-nowrap">{row['Frentista']}</td>
                                                     <td className="px-4 py-3 whitespace-nowrap">{row['Odômetro']}</td>
