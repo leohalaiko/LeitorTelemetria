@@ -43,7 +43,6 @@ function App() {
         const sheetData: any[][] = [];
         sheetData.push(headers);
 
-        // VALIDAÇÃO 2: Busca o primeiro medidor VÁLIDO (> 0) no arquivo inteiro para ser a âncora
         let medidorInicialDia = 0;
         for (const item of cleanData) {
             if (item.medidorInicial > 0) {
@@ -56,7 +55,7 @@ function App() {
             "",
             "",
             "",
-            medidorInicialDia,  // D: Medidor (Agora sempre > 0)
+            medidorInicialDia,
             "",
             "",
             "",
@@ -78,7 +77,7 @@ function App() {
             return timeStr;
         };
 
-        cleanData.forEach((item, index) => {
+        cleanData.forEach((item) => {
             const isConciliado = currentMode === 'transcricao' && item.volumeConciliado !== undefined;
 
             let encIni, encFim, litros, medidorCol;
@@ -98,22 +97,17 @@ function App() {
 
             if (isNaN(litros)) litros = 0;
 
-            const linhaExcel = index + 3;
-            const linhaAnterior = linhaExcel - 1;
-
-            const cellF = { t: 'n', v: encIni, f: `D${linhaAnterior}` };
-            const cellG = { t: 'n', v: encFim, f: `D${linhaExcel}` };
-            const cellH = { t: 'n', v: Number(litros.toFixed(2)), f: `(G${linhaExcel}-F${linhaExcel})*0.01` };
-
+            // MÉTODO 2: REMOVIDAS TODAS AS FÓRMULAS.
+            // Agora enviamos números secos e puros (encIni, encFim, litros).
             const row = [
                 nomeBomba,
                 formatTime(item.horaInicio),
                 formatTime(item.horaFim),
                 medidorCol,
                 "",
-                cellF,
-                cellG,
-                cellH,
+                encIni,                                // F: Número puro
+                encFim,                                // G: Número puro
+                Number(litros.toFixed(2)),             // H: Número puro (Ex: 4792.33)
                 item.placa,
                 "",
                 item.id,
@@ -161,7 +155,7 @@ function App() {
         const clientCode = fileNameClient.trim().replace(/\s+/g, '');
         const nomeArquivo = `Planilha insercao de abastecimento_S10_${clientCode}_${dia}${mes}${ano}.xlsx`;
 
-        // 👇 A MÁGICA ACONTECE AQUI: Adicionamos bookSST: true 👇
+        // Mantemos compression e bookSST porque eles ajudam a "imitar" um Excel original
         XLSX.writeFile(wb, nomeArquivo, { compression: true, bookSST: true });
 
         toast.success(`Planilha gerada com sucesso!`);
@@ -309,7 +303,7 @@ function App() {
                                             <div className="p-2 bg-green-100 rounded-lg text-green-600"><FileSpreadsheet className="w-6 h-6" /></div>
                                             <div>
                                                 <p className="font-bold text-green-900">Pronto para Exportar!</p>
-                                                <p className="text-sm text-green-700">A tabela já conta com as fórmulas nativas ocultas e compatíveis.</p>
+                                                <p className="text-sm text-green-700">Edite as placas e baixe a planilha em formato de texto/número puro.</p>
                                             </div>
                                         </div>
                                         <button onClick={handleDownloadClick} className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl font-bold flex items-center shadow-lg transition-all active:scale-95">
