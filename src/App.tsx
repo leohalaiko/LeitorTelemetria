@@ -22,144 +22,140 @@ function App() {
     const [pumpName, setPumpName] = useState("");
     const [fileNameClient, setFileNameClient] = useState("");
 
+    // NOVO ESTADO: Guarda o arquivo molde
+    const [templateFile, setTemplateFile] = useState<File | null>(null);
+
     const handleRowEdit = (index: number, field: string, value: string) => {
         const newData = [...processedData];
         newData[index] = { ...newData[index], [field]: value };
         setProcessedData(newData);
     };
 
-    const createWorkbook = (nomeBombaBruto: string) => {
-        const cleanData = formatForExcel(processedData);
-        if (cleanData.length === 0) return null;
-
-        const nomeBomba = nomeBombaBruto.trim();
-
-        const headers = [
-            "Bomba", "Hora Inicio", "Hora Fim", "Medidor",
-            "Encerrante inicial m³", "Encerrante Inicial", "Encerrante Final",
-            "Litros", "Placa", "1e-05", "ID", "Frentista", "Odometro"
-        ];
-
-        const sheetData: any[][] = [];
-        sheetData.push(headers);
-
-        let medidorInicialDia = 0;
-        for (const item of cleanData) {
-            if (item.medidorInicial > 0) {
-                medidorInicialDia = item.medidorInicial;
-                break;
-            }
-        }
-
-        const row2 = [
-            "",
-            "",
-            "",
-            medidorInicialDia,
-            "",
-            "",
-            "",
-            0,
-            "",
-            "",
-            "",
-            "",
-            ""
-        ];
-        sheetData.push(row2);
-
-        let medidorCorrente = medidorInicialDia;
-
-        const formatTime = (timeStr: string) => {
-            if (!timeStr || timeStr === '-') return "";
-            const parts = timeStr.split(':');
-            if (parts.length >= 2) return `${parts[0]}:${parts[1]}`;
-            return timeStr;
-        };
-
-        cleanData.forEach((item) => {
-            const isConciliado = currentMode === 'transcricao' && item.volumeConciliado !== undefined;
-
-            let encIni, encFim, litros, medidorCol;
-
-            if (isConciliado) {
-                encIni = medidorCorrente;
-                encFim = medidorCorrente + Math.round(item.volumeConciliado * 100);
-                litros = item.volumeConciliado;
-                medidorCol = encFim;
-                medidorCorrente = encFim;
-            } else {
-                encIni = item.medidorInicial;
-                encFim = item.medidorFinal;
-                litros = (encFim - encIni) / 100;
-                medidorCol = encFim;
-            }
-
-            if (isNaN(litros)) litros = 0;
-
-            // MÉTODO 2: REMOVIDAS TODAS AS FÓRMULAS.
-            // Agora enviamos números secos e puros (encIni, encFim, litros).
-            const row = [
-                nomeBomba,
-                formatTime(item.horaInicio),
-                formatTime(item.horaFim),
-                medidorCol,
-                "",
-                encIni,                                // F: Número puro
-                encFim,                                // G: Número puro
-                Number(litros.toFixed(2)),             // H: Número puro (Ex: 4792.33)
-                item.placa,
-                "",
-                item.id,
-                item.frentista,
-                item.odometro
-            ];
-            sheetData.push(row);
-        });
-
-        const ws = XLSX.utils.aoa_to_sheet(sheetData);
-        ws['!cols'] = [{ wch: 50 }, { wch: 12 }, { wch: 12 }, { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 15 }, { wch: 20 }, { wch: 10 }];
-
-        let nomeDaAba = "Abastecimentos";
-        if (processedData.length > 0 && processedData[0].originalTimestamp) {
-            const d = new Date(processedData[0].originalTimestamp);
-            nomeDaAba = `${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}.${d.getFullYear()}`;
-        }
-
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, nomeDaAba);
-        return wb;
-    };
-
     const handleDownloadClick = () => {
         if (processedData.length > 0) {
             setPumpName("");
             setFileNameClient("");
+            setTemplateFile(null); // Reseta o molde ao abrir
             setIsModalOpen(true);
         }
     };
 
-    const confirmDownload = () => {
+    // --- A MÁGICA DA INJEÇÃO DE MOLDE ---
+    const confirmDownload = async () => {
         if (!pumpName.trim() || !fileNameClient.trim()) {
-            toast.error("Preencha todos os campos!");
+            toast.error("Preencha o Nome da Bomba e o Código do Cliente!");
             return;
         }
-        const wb = createWorkbook(pumpName);
-        if (!wb) return;
+        if (!templateFile) {
+            toast.error("Você precisa enviar a Planilha Molde para gerar o arquivo!");
+            return;
+        }
 
-        const d = processedData[0]?.originalTimestamp ? new Date(processedData[0].originalTimestamp) : new Date();
-        const dia = String(d.getDate()).padStart(2,'0');
-        const mes = String(d.getMonth()+1).padStart(2,'0');
-        const ano = d.getFullYear();
+        try {
+            // 1. Lê o arquivo Molde Original com todo o seu DNA e metadados
+            const arrayBuffer = await templateFile.arrayBuffer();
+            const wb = XLSX.read(arrayBuffer, { type: 'array', cellStyles: true, cellFormula: true });
 
-        const clientCode = fileNameClient.trim().replace(/\s+/g, '');
-        const nomeArquivo = `Planilha insercao de abastecimento_S10_${clientCode}_${dia}${mes}${ano}.xlsx`;
+            // Pega a primeira aba do Molde
+            const wsName = wb.SheetNames[0];
+            const ws = wb.Sheets[wsName];
 
-        // Mantemos compression e bookSST porque eles ajudam a "imitar" um Excel original
-        XLSX.writeFile(wb, nomeArquivo, { compression: true, bookSST: true });
+            // 2. Prepara os nossos dados
+            const cleanData = formatForExcel(processedData);
 
-        toast.success(`Planilha gerada com sucesso!`);
-        setIsModalOpen(false);
+            let medidorInicialDia = 0;
+            for (const item of cleanData) {
+                if (item.medidorInicial > 0) {
+                    medidorInicialDia = item.medidorInicial;
+                    break;
+                }
+            }
+
+            // A linha 2 (Setup sem ID e sem Placa)
+            const row2 = [
+                "",
+                "",
+                "",
+                medidorInicialDia,
+                "",
+                "",
+                "",
+                0,
+                "",
+                "",
+                "",
+                "",
+                ""
+            ];
+
+            let medidorCorrente = medidorInicialDia;
+
+            const formatTime = (timeStr: string) => {
+                if (!timeStr || timeStr === '-') return "";
+                const parts = timeStr.split(':');
+                if (parts.length >= 2) return `${parts[0]}:${parts[1]}`;
+                return timeStr;
+            };
+
+            // Transforma nossos dados em um formato que o Excel entenda (Array de Arrays)
+            const dataRows = cleanData.map((item) => {
+                const isConciliado = currentMode === 'transcricao' && item.volumeConciliado !== undefined;
+
+                let encIni, encFim, litros, medidorCol;
+
+                if (isConciliado) {
+                    encIni = medidorCorrente;
+                    encFim = medidorCorrente + Math.round(item.volumeConciliado * 100);
+                    litros = item.volumeConciliado;
+                    medidorCol = encFim;
+                    medidorCorrente = encFim;
+                } else {
+                    encIni = item.medidorInicial;
+                    encFim = item.medidorFinal;
+                    litros = (encFim - encIni) / 100;
+                    medidorCol = encFim;
+                }
+
+                if (isNaN(litros)) litros = 0;
+
+                return [
+                    pumpName.trim(),
+                    formatTime(item.horaInicio),
+                    formatTime(item.horaFim),
+                    medidorCol,
+                    "",
+                    encIni,
+                    encFim,
+                    Number(litros.toFixed(2)),
+                    item.placa,
+                    "",
+                    item.id,
+                    item.frentista,
+                    item.odometro
+                ];
+            });
+
+            // 3. INJEÇÃO: Sobrescreve os dados no Molde a partir da Célula A2
+            XLSX.utils.sheet_add_aoa(ws, [row2, ...dataRows], { origin: "A2" });
+
+            // 4. Salva o arquivo mantendo o formato original
+            const d = processedData[0]?.originalTimestamp ? new Date(processedData[0].originalTimestamp) : new Date();
+            const dia = String(d.getDate()).padStart(2,'0');
+            const mes = String(d.getMonth()+1).padStart(2,'0');
+            const ano = d.getFullYear();
+
+            const clientCode = fileNameClient.trim().replace(/\s+/g, '');
+            const nomeArquivo = `Planilha insercao de abastecimento_S10_${clientCode}_${dia}${mes}${ano}.xlsx`;
+
+            XLSX.writeFile(wb, nomeArquivo, { compression: true, bookSST: true });
+
+            toast.success(`Planilha gerada com sucesso a partir do Molde!`);
+            setIsModalOpen(false);
+
+        } catch (error: any) {
+            console.error(error);
+            toast.error("Erro ao processar o arquivo Molde. Verifique se é uma planilha válida.");
+        }
     };
 
     const handleProcessConciliation = async () => {
@@ -303,7 +299,7 @@ function App() {
                                             <div className="p-2 bg-green-100 rounded-lg text-green-600"><FileSpreadsheet className="w-6 h-6" /></div>
                                             <div>
                                                 <p className="font-bold text-green-900">Pronto para Exportar!</p>
-                                                <p className="text-sm text-green-700">Edite as placas e baixe a planilha em formato de texto/número puro.</p>
+                                                <p className="text-sm text-green-700">Edite as placas e baixe a planilha injetando em um molde.</p>
                                             </div>
                                         </div>
                                         <button onClick={handleDownloadClick} className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl font-bold flex items-center shadow-lg transition-all active:scale-95">
@@ -356,15 +352,31 @@ function App() {
                             {isModalOpen && (
                                 <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
                                     <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-100">
-                                        <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold text-gray-800">Identificar Cliente e Base</h3><button onClick={() => setIsModalOpen(false)} className="p-1 hover:bg-gray-100 rounded-full text-gray-500"><X className="w-6 h-6" /></button></div>
+                                        <div className="flex justify-between items-center mb-4">
+                                            <h3 className="text-xl font-bold text-gray-800">Identificar e Exportar</h3>
+                                            <button onClick={() => setIsModalOpen(false)} className="p-1 hover:bg-gray-100 rounded-full text-gray-500"><X className="w-6 h-6" /></button>
+                                        </div>
+
+                                        {/* NOVO CAMPO: UPLOAD DO MOLDE */}
+                                        <div className="mb-4 bg-blue-50 p-4 rounded-xl border border-blue-100">
+                                            <label className="block text-sm font-bold text-blue-800 mb-2">
+                                                1. Planilha Molde (Obrigatório)
+                                            </label>
+                                            <input
+                                                type="file"
+                                                accept=".xlsx"
+                                                className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 outline-none"
+                                                onChange={(e) => setTemplateFile(e.target.files?.[0] || null)}
+                                            />
+                                            <p className="text-xs text-blue-600 mt-2 leading-tight">Carregue um arquivo .xlsx original do sistema, com os dados zerados, para o robô injetar os cálculos.</p>
+                                        </div>
 
                                         <div className="mb-4">
                                             <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                                Nome da Bomba (Vai dentro da planilha)
+                                                2. Nome da Bomba (Vai dentro da planilha)
                                             </label>
                                             <input
                                                 type="text"
-                                                autoFocus
                                                 placeholder="Ex: Bomba SMARTANK 641 (Grupo Roça...)"
                                                 className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 outline-none"
                                                 value={pumpName}
@@ -374,7 +386,7 @@ function App() {
 
                                         <div className="mb-6">
                                             <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                                Código do Cliente (Vai no nome do arquivo)
+                                                3. Código do Cliente (Vai no nome do arquivo)
                                             </label>
                                             <input
                                                 type="text"
@@ -386,7 +398,10 @@ function App() {
                                             />
                                         </div>
 
-                                        <div className="flex gap-3"><button onClick={() => setIsModalOpen(false)} className="flex-1 px-4 py-3 rounded-xl font-semibold text-gray-600 hover:bg-gray-100">Cancelar</button><button onClick={confirmDownload} className="flex-1 px-4 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-lg">Gerar Arquivo</button></div>
+                                        <div className="flex gap-3">
+                                            <button onClick={() => setIsModalOpen(false)} className="flex-1 px-4 py-3 rounded-xl font-semibold text-gray-600 hover:bg-gray-100">Cancelar</button>
+                                            <button onClick={confirmDownload} className="flex-1 px-4 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-lg">Injetar e Baixar</button>
+                                        </div>
                                     </div>
                                 </div>
                             )}
