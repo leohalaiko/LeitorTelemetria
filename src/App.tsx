@@ -3,6 +3,7 @@ import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { toast, Toaster } from 'sonner';
 import { ArrowLeft, Download, FileSpreadsheet, Settings, X, Fuel } from 'lucide-react';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 
 // Importação das funções (Adicionei as novas)
 import { processLogFile, processWlnFile, formatForExcel, parseTankFile, reconciliateData } from './utils/processors';
@@ -197,6 +198,7 @@ function App() {
     return (
         <div className="min-h-screen bg-gray-50 py-12 px-4 font-sans text-gray-800">
             <Toaster position="top-right" richColors />
+            <SpeedInsights />
             <div className="max-w-5xl mx-auto">
                 <div className="text-center mb-10">
                     <h1 className="text-4xl font-extrabold text-gray-900 tracking-tight mb-2">Analisador de Telemetria</h1>
