@@ -24,14 +24,23 @@ function App() {
     const [pumpName, setPumpName] = useState("");
     const [fileNameClient, setFileNameClient] = useState("");
 
-    // Novo estado de segurança
     const [templateFile, setTemplateFile] = useState<File | null>(null);
     const [needsManualMolde, setNeedsManualMolde] = useState(false);
 
-    const handleRowEdit = (index: number, field: string, value: string | number) => {
-        const newData = [...processedData];
-        newData[index] = { ...newData[index], [field]: value };
-        setProcessedData(newData);
+    // O Cérebro Unificado: A tela e o Excel usam a mesma visão processada
+    const displayData = formatForExcel(processedData, currentMode || 'normal');
+
+    const handleRowEdit = (timestamp: number, fieldName: string, value: string | number) => {
+        setProcessedData(prev => prev.map(item => {
+            if (item.originalTimestamp === timestamp) {
+                if (fieldName === 'Placa') {
+                    if (item['Veículo'] !== undefined) return { ...item, ['Veículo']: value };
+                    return { ...item, ['Veículo (Cartão)']: value };
+                }
+                return { ...item, [fieldName]: value };
+            }
+            return item;
+        }));
     };
 
     const handleDownloadClick = () => {
@@ -52,15 +61,14 @@ function App() {
         try {
             let arrayBuffer: ArrayBuffer;
 
-            // SISTEMA HÍBRIDO: Usa o arquivo manual se anexado, senão tenta puxar do servidor
             if (templateFile) {
                 arrayBuffer = await templateFile.arrayBuffer();
             } else {
                 const response = await fetch('/Molde_Vazio.xlsx');
                 if (!response.ok) {
                     setNeedsManualMolde(true);
-                    toast.warning("Molde automático não encontrado no servidor (Erro 404). Por favor, anexe o arquivo manualmente abaixo.");
-                    return; // Para a execução e espera o usuário anexar
+                    toast.warning("Molde automático não encontrado no servidor. Por favor, anexe o arquivo manualmente abaixo.");
+                    return;
                 }
                 arrayBuffer = await response.arrayBuffer();
             }
@@ -69,18 +77,24 @@ function App() {
             await workbook.xlsx.load(arrayBuffer);
             const ws = workbook.worksheets[0];
 
-            const cleanData = formatForExcel(processedData, currentMode || 'normal');
+            // SOLUÇÃO DO LIMBO: O sistema lê o nome da aba para a Data!
+            const d = displayData[0]?.originalTimestamp ? new Date(displayData[0].originalTimestamp) : new Date();
+            const dia = String(d.getDate()).padStart(2,'0');
+            const mes = String(d.getMonth()+1).padStart(2,'0');
+            const ano = d.getFullYear();
 
-            let medidorCorrente = 0;
+            ws.name = `${dia}.${mes}.${ano}`; // Renomeia a aba invisível!
+
+            // Injeta o Medidor Setup (D2)
+            let medidorSetup = 0;
             if (currentMode === 'transcricao') {
-                medidorCorrente = 0;
+                medidorSetup = 0;
             } else {
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const first = cleanData.find((d: any) => Number(d.raw['Encerrante Inicial Bruto']) > 0);
-                medidorCorrente = first ? Number(first.raw['Encerrante Inicial Bruto']) : 0;
+                const first = displayData.find((d: any) => d.medidorInicial > 0);
+                medidorSetup = first ? first.medidorInicial : 0;
             }
-
-            ws.getCell('D2').value = medidorCorrente;
+            ws.getCell('D2').value = medidorSetup;
 
             const formatTime = (timeStr: string | number | undefined | null) => {
                 if (!timeStr || timeStr === '-') return "";
@@ -92,22 +106,14 @@ function App() {
             };
 
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            cleanData.forEach((item: any, index: number) => {
+            displayData.forEach((item: any, index: number) => {
                 const r = index + 3;
                 const row = ws.getRow(r);
-
-                let medidorCol = 0;
-                if (currentMode === 'transcricao') {
-                    medidorCorrente += Math.round((item.volumeConciliado || 0) * 100);
-                    medidorCol = medidorCorrente;
-                } else {
-                    medidorCol = Number(item.raw['Encerrante Final Bruto'] || 0);
-                }
 
                 row.getCell(1).value = pumpName.trim();
                 row.getCell(2).value = formatTime(item.horaInicio);
                 row.getCell(3).value = formatTime(item.horaFim);
-                row.getCell(4).value = medidorCol;
+                row.getCell(4).value = item.medidorFinal;
 
                 row.getCell(9).value = item.placa;
 
@@ -120,17 +126,13 @@ function App() {
                 row.commit();
             });
 
-            const d = cleanData[0]?.originalTimestamp ? new Date(cleanData[0].originalTimestamp) : new Date();
-            const dia = String(d.getDate()).padStart(2,'0');
-            const mes = String(d.getMonth()+1).padStart(2,'0');
-            const ano = d.getFullYear();
             const clientCode = fileNameClient.trim().replace(/\s+/g, '');
             const nomeArquivo = `Planilha insercao de abastecimento_S10_${clientCode}_${dia}${mes}${ano}.xlsx`;
 
             const buffer = await workbook.xlsx.writeBuffer();
             saveAs(new Blob([buffer]), nomeArquivo);
 
-            toast.success(`Planilha gerada com sucesso!`);
+            toast.success(`Planilha gerada e Aba renomeada para ${dia}.${mes}.${ano}!`);
             setIsModalOpen(false);
 
         } catch (error) {
@@ -279,14 +281,14 @@ function App() {
                                 </div>
                             )}
 
-                            {processedData.length > 0 && (
+                            {displayData.length > 0 && (
                                 <div className="mt-8 animate-fade-in-up">
                                     <div className="flex items-center justify-between mb-4 bg-green-50 p-4 rounded-xl border border-green-100">
                                         <div className="flex items-center gap-3">
                                             <div className="p-2 bg-green-100 rounded-lg text-green-600"><FileSpreadsheet className="w-6 h-6" /></div>
                                             <div>
                                                 <p className="font-bold text-green-900">Pronto para Exportar!</p>
-                                                <p className="text-sm text-green-700">Edite as informações necessárias antes de baixar.</p>
+                                                <p className="text-sm text-green-700">O que você alterar na tabela já reflete nos encerrantes!</p>
                                             </div>
                                         </div>
                                         <button onClick={handleDownloadClick} className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl font-bold flex items-center shadow-lg transition-all active:scale-95">
@@ -294,7 +296,6 @@ function App() {
                                         </button>
                                     </div>
 
-                                    {/* CORREÇÃO DO SCROLL: overflow-auto e max-h adicionados corretamente */}
                                     <div className="overflow-auto border border-gray-200 rounded-xl shadow-sm max-h-[600px] w-full bg-white">
                                         <table className="w-full text-sm text-left relative">
                                             <thead className="bg-gray-100 text-gray-600 font-bold sticky top-0 z-10 shadow-sm">
@@ -303,40 +304,37 @@ function App() {
                                                 <th className="px-4 py-3 whitespace-nowrap">ID</th>
                                                 <th className="px-4 py-3 whitespace-nowrap text-blue-600 flex items-center gap-1"><Edit3 className="w-4 h-4"/> Placa</th>
                                                 <th className="px-4 py-3 whitespace-nowrap text-blue-600"><Edit3 className="w-4 h-4 inline mr-1"/> Vol (L)</th>
-                                                {/* Adicionado Encerrantes na tela */}
-                                                <th className="px-4 py-3 whitespace-nowrap text-gray-400">Enc. Ini</th>
-                                                <th className="px-4 py-3 whitespace-nowrap text-gray-400">Enc. Fim</th>
+                                                <th className="px-4 py-3 whitespace-nowrap text-gray-400">Enc. Inicial</th>
+                                                <th className="px-4 py-3 whitespace-nowrap text-gray-400">Enc. Final</th>
                                                 <th className="px-4 py-3 whitespace-nowrap">Frentista</th>
                                             </tr>
                                             </thead>
                                             <tbody>
                                             {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                                            {processedData.map((row: any, i: number) => (
-                                                <tr key={i} className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
-                                                    <td className="px-4 py-3 whitespace-nowrap">{row['Data'] || row['Data Inicial']}</td>
-                                                    <td className="px-4 py-3 whitespace-nowrap font-mono">{row['ID Operação'] || row['ID Original (Travado)']}</td>
+                                            {displayData.map((row: any) => (
+                                                <tr key={row.originalTimestamp} className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
+                                                    <td className="px-4 py-3 whitespace-nowrap">{row.dataStr}</td>
+                                                    <td className="px-4 py-3 whitespace-nowrap font-mono">{row.id}</td>
                                                     <td className="px-4 py-2">
                                                         <input
                                                             type="text" placeholder="EX: ABC1234"
                                                             className="border border-blue-200 rounded-lg px-3 py-1.5 w-28 focus:ring-2 focus:ring-blue-500 outline-none uppercase font-bold text-gray-700 bg-white shadow-sm"
-                                                            value={row['Veículo (Cartão)'] ?? row['Veículo'] ?? ''}
-                                                            onChange={(e) => {
-                                                                if (row['Veículo'] !== undefined) handleRowEdit(i, 'Veículo', e.target.value.toUpperCase());
-                                                                else handleRowEdit(i, 'Veículo (Cartão)', e.target.value.toUpperCase());
-                                                            }}
+                                                            value={row.placa}
+                                                            onChange={(e) => handleRowEdit(row.originalTimestamp, 'Placa', e.target.value.toUpperCase())}
                                                         />
                                                     </td>
                                                     <td className="px-4 py-2">
                                                         <input
                                                             type="number"
                                                             className="border border-blue-200 rounded-lg px-3 py-1.5 w-24 focus:ring-2 focus:ring-blue-500 outline-none font-bold text-gray-700 bg-white shadow-sm"
-                                                            value={row['Volume (L)']}
-                                                            onChange={(e) => handleRowEdit(i, 'Volume (L)', Number(e.target.value))}
+                                                            value={row.volumeConciliado}
+                                                            onChange={(e) => handleRowEdit(row.originalTimestamp, 'Volume (L)', Number(e.target.value))}
                                                         />
                                                     </td>
-                                                    <td className="px-4 py-3 whitespace-nowrap text-gray-400">{row['Encerrante Inicial Bruto'] || row['Encerrante Inicial']}</td>
-                                                    <td className="px-4 py-3 whitespace-nowrap text-gray-400">{row['Encerrante Final Bruto'] || row['Encerrante Final']}</td>
-                                                    <td className="px-4 py-3 whitespace-nowrap">{row['Frentista']}</td>
+                                                    {/* Agora os encerrantes aparecem preenchidos e atualizam ao vivo! */}
+                                                    <td className="px-4 py-3 whitespace-nowrap text-gray-500 font-mono">{row.medidorInicial}</td>
+                                                    <td className="px-4 py-3 whitespace-nowrap text-gray-500 font-mono">{row.medidorFinal}</td>
+                                                    <td className="px-4 py-3 whitespace-nowrap">{row.frentista}</td>
                                                 </tr>
                                             ))}
                                             </tbody>
@@ -353,7 +351,6 @@ function App() {
                                             <button onClick={() => setIsModalOpen(false)} className="p-1 hover:bg-gray-100 rounded-full text-gray-500"><X className="w-6 h-6" /></button>
                                         </div>
 
-                                        {/* CAIXA DE EMERGÊNCIA - Aparece só se der Erro 404 */}
                                         {needsManualMolde && (
                                             <div className="mb-4 bg-orange-50 p-4 rounded-xl border border-orange-300">
                                                 <label className="block text-sm font-bold text-orange-800 mb-2">

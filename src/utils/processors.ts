@@ -68,7 +68,7 @@ export const parseTankFile = (file: File): Promise<TankRecord[]> => {
                                 records.push({ timestamp: ts, volume: volClean, rawDate: horaStr });
                             }
                         } catch {
-                            // ignora linha
+                            // ignora
                         }
                     }
                 });
@@ -231,7 +231,6 @@ const processManualTranscript = (data: any[]) => {
     return result.sort((a, b) => b.originalTimestamp - a.originalTimestamp);
 };
 
-// EXPORT PRINCIPAL PARA O EXCELJS
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const formatForExcel = (data: any[], mode: string) => {
     const sortedData = [...data].sort((a, b) => {
@@ -257,19 +256,25 @@ export const formatForExcel = (data: any[], mode: string) => {
             if (parts.length > 1) horaFim = parts[1];
         }
 
+        let medidorInicialDaLinha = 0;
         let medidorFinalDaLinha = 0;
+
         if (mode === 'transcricao') {
+            medidorInicialDaLinha = medidorCorrente;
             medidorCorrente += Math.round((item['Volume (L)'] || 0) * 100);
             medidorFinalDaLinha = medidorCorrente;
         } else {
+            medidorInicialDaLinha = Number(item['Encerrante Inicial Bruto'] || item['Encerrante Inicial'] || 0);
             medidorFinalDaLinha = Number(item['Encerrante Final Bruto'] || item['Encerrante Final'] || 0);
         }
 
         return {
             raw: item,
+            dataStr: item['Data'] || item['Data Inicial'], // Data enviada pra tela
             bomba: 'S10',
             horaInicio: horaInicio,
             horaFim: horaFim,
+            medidorInicial: medidorInicialDaLinha,
             medidorFinal: medidorFinalDaLinha,
             placa: item['Veículo (Cartão)'] || item['Veículo'] || '',
             id: item['ID Operação'] || item['ID Original (Travado)'] || '',
