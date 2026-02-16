@@ -27,7 +27,6 @@ function App() {
     const [templateFile, setTemplateFile] = useState<File | null>(null);
     const [needsManualMolde, setNeedsManualMolde] = useState(false);
 
-    // O Cérebro Unificado: A tela e o Excel usam a mesma visão processada
     const displayData = formatForExcel(processedData, currentMode || 'normal');
 
     const handleRowEdit = (timestamp: number, fieldName: string, value: string | number) => {
@@ -67,7 +66,7 @@ function App() {
                 const response = await fetch('/Molde_Vazio.xlsx');
                 if (!response.ok) {
                     setNeedsManualMolde(true);
-                    toast.warning("Molde automático não encontrado no servidor. Por favor, anexe o arquivo manualmente abaixo.");
+                    toast.warning("Molde automático não encontrado no servidor. Por favor, anexe o arquivo manualmente.");
                     return;
                 }
                 arrayBuffer = await response.arrayBuffer();
@@ -77,15 +76,13 @@ function App() {
             await workbook.xlsx.load(arrayBuffer);
             const ws = workbook.worksheets[0];
 
-            // SOLUÇÃO DO LIMBO: O sistema lê o nome da aba para a Data!
             const d = displayData[0]?.originalTimestamp ? new Date(displayData[0].originalTimestamp) : new Date();
             const dia = String(d.getDate()).padStart(2,'0');
             const mes = String(d.getMonth()+1).padStart(2,'0');
             const ano = d.getFullYear();
 
-            ws.name = `${dia}.${mes}.${ano}`; // Renomeia a aba invisível!
+            ws.name = `${dia}.${mes}.${ano}`;
 
-            // Injeta o Medidor Setup (D2)
             let medidorSetup = 0;
             if (currentMode === 'transcricao') {
                 medidorSetup = 0;
@@ -110,17 +107,23 @@ function App() {
                 const r = index + 3;
                 const row = ws.getRow(r);
 
-                row.getCell(1).value = pumpName.trim();
+                row.getCell(1).value = String(pumpName).trim();
                 row.getCell(2).value = formatTime(item.horaInicio);
                 row.getCell(3).value = formatTime(item.horaFim);
-                row.getCell(4).value = item.medidorFinal;
+                row.getCell(4).value = Number(item.medidorFinal);
 
-                row.getCell(9).value = item.placa;
+                // MÁGICA: Formulani jagya e sidha Pure Numbers inject kariye chiye!
+                row.getCell(6).value = Number(item.medidorInicial);   // F: Encerrante Inicial
+                row.getCell(7).value = Number(item.medidorFinal);     // G: Encerrante Final
+                row.getCell(8).value = Number(item.volumeConciliado); // H: Litros
+
+                // Placa ne strictly string tarike pass karvama aave che jethi system reject na kare
+                row.getCell(9).value = item.placa ? String(item.placa).trim() : '';
 
                 const idVal = Number(item.id);
                 row.getCell(11).value = isNaN(idVal) ? item.id : idVal;
 
-                row.getCell(12).value = item.frentista;
+                row.getCell(12).value = item.frentista ? String(item.frentista).trim() : '';
                 row.getCell(13).value = item.odometro !== '' ? Number(item.odometro) : '';
 
                 row.commit();
@@ -132,7 +135,7 @@ function App() {
             const buffer = await workbook.xlsx.writeBuffer();
             saveAs(new Blob([buffer]), nomeArquivo);
 
-            toast.success(`Planilha gerada e Aba renomeada para ${dia}.${mes}.${ano}!`);
+            toast.success(`Planilha gerada e pronta para upload direto!`);
             setIsModalOpen(false);
 
         } catch (error) {
@@ -331,7 +334,6 @@ function App() {
                                                             onChange={(e) => handleRowEdit(row.originalTimestamp, 'Volume (L)', Number(e.target.value))}
                                                         />
                                                     </td>
-                                                    {/* Agora os encerrantes aparecem preenchidos e atualizam ao vivo! */}
                                                     <td className="px-4 py-3 whitespace-nowrap text-gray-500 font-mono">{row.medidorInicial}</td>
                                                     <td className="px-4 py-3 whitespace-nowrap text-gray-500 font-mono">{row.medidorFinal}</td>
                                                     <td className="px-4 py-3 whitespace-nowrap">{row.frentista}</td>
