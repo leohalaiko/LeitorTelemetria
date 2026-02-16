@@ -29,9 +29,9 @@ function App() {
 
     const displayData = formatForExcel(processedData, currentMode || 'normal');
 
-    const handleRowEdit = (timestamp: number, fieldName: string, value: string | number) => {
+    const handleRowEdit = (uid: string, fieldName: string, value: string | number) => {
         setProcessedData(prev => prev.map(item => {
-            if (item.originalTimestamp === timestamp) {
+            if (item._uid === uid) {
                 if (fieldName === 'Placa') {
                     if (item['Veículo'] !== undefined) return { ...item, ['Veículo']: value };
                     return { ...item, ['Veículo (Cartão)']: value };
@@ -47,6 +47,7 @@ function App() {
             setPumpName("");
             setFileNameClient("");
             setNeedsManualMolde(false);
+            setTemplateFile(null); // Limpa o molde anterior se abrir o modal de novo
             setIsModalOpen(true);
         }
     };
@@ -107,17 +108,15 @@ function App() {
                 const r = index + 3;
                 const row = ws.getRow(r);
 
-                row.getCell(1).value = String(pumpName).trim();
+                row.getCell(1).value = pumpName.trim();
                 row.getCell(2).value = formatTime(item.horaInicio);
                 row.getCell(3).value = formatTime(item.horaFim);
-                row.getCell(4).value = Number(item.medidorFinal);
+                row.getCell(4).value = item.medidorFinal;
 
-                // MÁGICA: Formulani jagya e sidha Pure Numbers inject kariye chiye!
-                row.getCell(6).value = Number(item.medidorInicial);   // F: Encerrante Inicial
-                row.getCell(7).value = Number(item.medidorFinal);     // G: Encerrante Final
-                row.getCell(8).value = Number(item.volumeConciliado); // H: Litros
+                row.getCell(6).value = Number(item.medidorInicial);
+                row.getCell(7).value = Number(item.medidorFinal);
+                row.getCell(8).value = Number(item.volumeConciliado);
 
-                // Placa ne strictly string tarike pass karvama aave che jethi system reject na kare
                 row.getCell(9).value = item.placa ? String(item.placa).trim() : '';
 
                 const idVal = Number(item.id);
@@ -135,7 +134,7 @@ function App() {
             const buffer = await workbook.xlsx.writeBuffer();
             saveAs(new Blob([buffer]), nomeArquivo);
 
-            toast.success(`Planilha gerada e pronta para upload direto!`);
+            toast.success(`Planilha gerada e pronta!`);
             setIsModalOpen(false);
 
         } catch (error) {
@@ -304,6 +303,8 @@ function App() {
                                             <thead className="bg-gray-100 text-gray-600 font-bold sticky top-0 z-10 shadow-sm">
                                             <tr>
                                                 <th className="px-4 py-3 whitespace-nowrap">Data</th>
+                                                <th className="px-4 py-3 whitespace-nowrap">Início</th>
+                                                <th className="px-4 py-3 whitespace-nowrap">Fim</th>
                                                 <th className="px-4 py-3 whitespace-nowrap">ID</th>
                                                 <th className="px-4 py-3 whitespace-nowrap text-blue-600 flex items-center gap-1"><Edit3 className="w-4 h-4"/> Placa</th>
                                                 <th className="px-4 py-3 whitespace-nowrap text-blue-600"><Edit3 className="w-4 h-4 inline mr-1"/> Vol (L)</th>
@@ -315,15 +316,17 @@ function App() {
                                             <tbody>
                                             {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                                             {displayData.map((row: any) => (
-                                                <tr key={row.originalTimestamp} className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
-                                                    <td className="px-4 py-3 whitespace-nowrap">{row.dataStr}</td>
+                                                <tr key={row._uid} className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
+                                                    <td className="px-4 py-3 whitespace-nowrap font-bold text-gray-800">{row.dataStr?.split(' ')[0] || '-'}</td>
+                                                    <td className="px-4 py-3 whitespace-nowrap font-medium text-gray-700">{row.horaInicio}</td>
+                                                    <td className="px-4 py-3 whitespace-nowrap font-medium text-gray-700">{row.horaFim}</td>
                                                     <td className="px-4 py-3 whitespace-nowrap font-mono">{row.id}</td>
                                                     <td className="px-4 py-2">
                                                         <input
                                                             type="text" placeholder="EX: ABC1234"
                                                             className="border border-blue-200 rounded-lg px-3 py-1.5 w-28 focus:ring-2 focus:ring-blue-500 outline-none uppercase font-bold text-gray-700 bg-white shadow-sm"
                                                             value={row.placa}
-                                                            onChange={(e) => handleRowEdit(row.originalTimestamp, 'Placa', e.target.value.toUpperCase())}
+                                                            onChange={(e) => handleRowEdit(row._uid, 'Placa', e.target.value.toUpperCase())}
                                                         />
                                                     </td>
                                                     <td className="px-4 py-2">
@@ -331,7 +334,7 @@ function App() {
                                                             type="number"
                                                             className="border border-blue-200 rounded-lg px-3 py-1.5 w-24 focus:ring-2 focus:ring-blue-500 outline-none font-bold text-gray-700 bg-white shadow-sm"
                                                             value={row.volumeConciliado}
-                                                            onChange={(e) => handleRowEdit(row.originalTimestamp, 'Volume (L)', Number(e.target.value))}
+                                                            onChange={(e) => handleRowEdit(row._uid, 'Volume (L)', Number(e.target.value))}
                                                         />
                                                     </td>
                                                     <td className="px-4 py-3 whitespace-nowrap text-gray-500 font-mono">{row.medidorInicial}</td>
@@ -353,18 +356,42 @@ function App() {
                                             <button onClick={() => setIsModalOpen(false)} className="p-1 hover:bg-gray-100 rounded-full text-gray-500"><X className="w-6 h-6" /></button>
                                         </div>
 
+                                        {/* A MÁGICA DA UX ACONTECE AQUI */}
                                         {needsManualMolde && (
-                                            <div className="mb-4 bg-orange-50 p-4 rounded-xl border border-orange-300">
-                                                <label className="block text-sm font-bold text-orange-800 mb-2">
-                                                    ⚠️ Anexar Molde Manualmente
+                                            <div className={`mb-4 p-4 rounded-xl border transition-colors duration-300 ${templateFile ? 'bg-green-50 border-green-300' : 'bg-orange-50 border-orange-300'}`}>
+                                                <label className={`block text-sm font-bold mb-2 ${templateFile ? 'text-green-800' : 'text-orange-800'}`}>
+                                                    {templateFile ? '✅ Molde Anexado com Sucesso' : '⚠️ Anexar Molde Manualmente'}
                                                 </label>
-                                                <input
-                                                    type="file"
-                                                    accept=".xlsx"
-                                                    className="w-full text-sm text-orange-800 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-orange-600 file:text-white hover:file:bg-orange-700 outline-none"
-                                                    onChange={(e) => setTemplateFile(e.target.files?.[0] || null)}
-                                                />
-                                                <p className="text-xs text-orange-700 mt-2">O arquivo 'Molde_Vazio.xlsx' não foi achado no servidor. Envie-o agora para gerar a planilha.</p>
+
+                                                {!templateFile ? (
+                                                    <>
+                                                        <input
+                                                            type="file"
+                                                            accept=".xlsx"
+                                                            className="w-full text-sm text-orange-800 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-orange-600 file:text-white hover:file:bg-orange-700 outline-none cursor-pointer"
+                                                            onChange={(e) => {
+                                                                const file = e.target.files?.[0];
+                                                                if (file) {
+                                                                    setTemplateFile(file);
+                                                                    toast.success(`Arquivo "${file.name}" carregado!`);
+                                                                }
+                                                            }}
+                                                        />
+                                                        <p className="text-xs text-orange-700 mt-2 leading-tight">O arquivo automático não foi achado no servidor. Envie o seu molde agora para gerar a planilha.</p>
+                                                    </>
+                                                ) : (
+                                                    <div className="flex items-center justify-between bg-white p-2 rounded-lg border border-green-200 shadow-sm animate-fade-in-up">
+                                                        <span className="text-sm font-medium text-green-700 truncate mr-2" title={templateFile.name}>
+                                                            {templateFile.name}
+                                                        </span>
+                                                        <button
+                                                            onClick={() => setTemplateFile(null)}
+                                                            className="text-xs px-3 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 font-bold transition-colors"
+                                                        >
+                                                            Trocar
+                                                        </button>
+                                                    </div>
+                                                )}
                                             </div>
                                         )}
 

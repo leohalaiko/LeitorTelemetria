@@ -1,11 +1,9 @@
-// src/utils/wlnParser.ts
-
 export interface WlnRecord {
     timestamp: number;
     dataIso: string;
     latitude: number;
     longitude: number;
-    // Permite campos dinâmicos como 'upar16', 'pwr_ext', etc.
+    // Permite campos dinâmicos como 'upar16', 'i/o', etc.
     [key: string]: string | number;
 }
 
@@ -16,7 +14,6 @@ export const parseWlnContent = (content: string): WlnRecord[] => {
     for (const line of lines) {
         const trimmedLine = line.trim();
 
-        // Ignora linhas que não começam com REG
         if (!trimmedLine || !trimmedLine.startsWith("REG;")) {
             continue;
         }
@@ -24,11 +21,10 @@ export const parseWlnContent = (content: string): WlnRecord[] => {
         const parts = trimmedLine.split(';');
 
         try {
-            // O Timestamp costuma ser o índice 1
             const timestampSeconds = parseInt(parts[1]);
             const timestampMs = timestampSeconds * 1000;
 
-            if (isNaN(timestampMs)) continue; // Pula se timestamp for inválido
+            if (isNaN(timestampMs)) continue;
 
             const baseRecord: WlnRecord = {
                 timestamp: timestampMs,
@@ -37,20 +33,22 @@ export const parseWlnContent = (content: string): WlnRecord[] => {
                 longitude: parseFloat(parts[3]),
             };
 
-            // "Explosão" de parâmetros (Parse dinâmico) para pegar upar16, upar23, etc.
             parts.forEach((part) => {
-                // Divide cada bloco por vírgula
                 const subItems = part.split(',');
 
                 subItems.forEach((item) => {
-                    if (item.includes(':')) {
-                        let [key, val] = item.split(':');
+                    // Agora suporta tanto "upar0:123" quanto "I/O=13/e"
+                    const separator = item.includes('=') ? '=' : (item.includes(':') ? ':' : null);
+
+                    if (separator) {
+                        let [key, val] = item.split(separator);
 
                         if (key && val) {
                             key = key.trim().toLowerCase();
                             val = val.replace(/"/g, '').trim();
 
-                            const numVal = parseFloat(val);
+                            // BUG CORRIGIDO: Number() garante que "13/e" não perca a letra 'e'
+                            const numVal = Number(val);
 
                             if (!isNaN(numVal) && val !== '') {
                                 baseRecord[key] = numVal;

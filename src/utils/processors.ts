@@ -1,9 +1,11 @@
 import Papa from 'papaparse';
 import { parseWlnContent, type WlnRecord } from './wlnParser';
 
+const generateUID = () => Math.random().toString(36).substring(2, 11) + Date.now().toString(36);
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const formatUnixDate = (timestamp: any) => {
-    if (!timestamp || timestamp === 0) return '-';
+    if (!timestamp || timestamp === 0 || isNaN(Number(timestamp))) return '-';
     try {
         const timeVal = String(timestamp).length > 11 ? Number(timestamp) : Number(timestamp) * 1000;
         return new Date(timeVal).toLocaleString('pt-BR');
@@ -18,13 +20,47 @@ const calculateVolume = (final: any, start: any) => {
     return isNaN(vol) ? 0 : Number(vol.toFixed(2));
 };
 
+// ==========================================
+// O SEU BACKUP DE TRAMA ESTÁ AQUI
+// ==========================================
+const enrichWlnData = (data: WlnRecord[]) => {
+    const chronological = [...data].sort((a, b) => a.timestamp - b.timestamp);
+    let lastPumpOnTs = 0;
+
+    chronological.forEach(row => {
+        // Mapeia o momento exato em que a bomba ligou (I/O terminando em 'e')
+        const io = row['i/o'] || row['io'];
+        if (typeof io === 'string') {
+            if (io.includes('/e') || io.endsWith('e')) {
+                lastPumpOnTs = row.timestamp;
+            }
+        }
+
+        // Se acharmos um abastecimento e o tempo estiver corrompido (0), usamos o backup!
+        if (row.upar0) {
+            if (!row.upar3 || Number(row.upar3) === 0) {
+                // Se achou o '/e', usa a hora dele. Se não, subtrai 2 minutos por segurança.
+                row.upar3 = lastPumpOnTs > 0 ? lastPumpOnTs : row.timestamp - (2 * 60 * 1000);
+            }
+            if (!row.upar5 || Number(row.upar5) === 0) {
+                // A hora final é a hora que a trama do abastecimento chegou no servidor
+                row.upar5 = row.timestamp;
+            }
+        }
+    });
+
+    return chronological;
+};
+
 export const processWlnFile = (file: File): Promise<WlnRecord[]> => {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (e) => {
             const text = e.target?.result;
             if (typeof text === 'string') {
-                resolve(parseWlnContent(text));
+                const parsed = parseWlnContent(text);
+                const enriched = enrichWlnData(parsed); // Aplica a vacina contra horas zeradas
+                resolve(enriched);
             } else {
                 reject(new Error("Falha ao ler WLN."));
             }
@@ -98,12 +134,7 @@ export const reconciliateData = (wlnData: any[], tankData: TankRecord[]) => {
         processedIDs.add(idOperacao);
 
         const startTs = String(row.upar3).length > 11 ? Number(row.upar3) : Number(row.upar3) * 1000;
-        let endTs = 0;
-        if (row.upar5 && Number(row.upar5) > 0) {
-            endTs = String(row.upar5).length > 11 ? Number(row.upar5) : Number(row.upar5) * 1000;
-        } else {
-            endTs = startTs + (4 * 60 * 1000);
-        }
+        const endTs = String(row.upar5).length > 11 ? Number(row.upar5) : Number(row.upar5) * 1000;
 
         const tankStart = findClosestRecord(tankData, startTs);
         const tankEnd = findClosestRecord(tankData, endTs);
@@ -115,7 +146,8 @@ export const reconciliateData = (wlnData: any[], tankData: TankRecord[]) => {
         }
 
         results.push({
-            'originalTimestamp': startTs,
+            _uid: generateUID(),
+            'originalTimestamp': startTs || 0,
             'Data': formatUnixDate(row.upar3),
             'Data Final': formatUnixDate(row.upar5 || endTs/1000),
             'ID Operação': row.upar0,
@@ -153,9 +185,10 @@ const processNormalSupply = (data: any[]) => {
             const signature = `${row.upar3}-${row.upar4}`;
             if (vol > 0.5 && !processedSignatures.has(signature)) {
                 processedSignatures.add(signature);
-                const rawTs = Number(row.upar3);
+                const rawTs = Number(row.upar3) || 0;
                 const timeMs = String(rawTs).length > 11 ? rawTs : rawTs * 1000;
                 result.push({
+                    _uid: generateUID(),
                     'originalTimestamp': timeMs,
                     'Data': formatUnixDate(row.upar3),
                     'Data Final': formatUnixDate(row.upar5),
@@ -188,12 +221,14 @@ const processLockedID = (data: any[], startIdInput: number) => {
             uniqueSupplies.push({ row, vol });
         }
     });
-    uniqueSupplies.sort((a, b) => Number(a.row.upar3) - Number(b.row.upar3));
+    uniqueSupplies.sort((a, b) => (Number(a.row.upar3) || 0) - (Number(b.row.upar3) || 0));
+
     const finalData = uniqueSupplies.map(item => {
         currentIdCounter++;
-        const rawTs = Number(item.row.upar3);
+        const rawTs = Number(item.row.upar3) || 0;
         const timeMs = String(rawTs).length > 11 ? rawTs : rawTs * 1000;
         return {
+            _uid: generateUID(),
             'originalTimestamp': timeMs,
             'ID Gerado (Corrigido)': currentIdCounter,
             'ID Original (Travado)': item.row.upar0,
@@ -212,9 +247,10 @@ const processLockedID = (data: any[], startIdInput: number) => {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const processManualTranscript = (data: any[]) => {
     const result = data.filter(row => row.upar0).map(row => {
-        const rawTs = Number(row.upar3);
+        const rawTs = Number(row.upar3) || 0;
         const timeMs = String(rawTs).length > 11 ? rawTs : rawTs * 1000;
         return {
+            _uid: generateUID(),
             'originalTimestamp': timeMs,
             'Data': formatUnixDate(row.upar3),
             'Data Final': row.upar5 ? formatUnixDate(row.upar5) : formatUnixDate(row.upar3),
@@ -234,8 +270,8 @@ const processManualTranscript = (data: any[]) => {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const formatForExcel = (data: any[], mode: string) => {
     const sortedData = [...data].sort((a, b) => {
-        const timeA = a.originalTimestamp || 0;
-        const timeB = b.originalTimestamp || 0;
+        const timeA = Number(a.originalTimestamp) || 0;
+        const timeB = Number(b.originalTimestamp) || 0;
         return timeA - timeB;
     });
 
@@ -247,9 +283,14 @@ export const formatForExcel = (data: any[], mode: string) => {
 
     const mappedData = sortedData.map((item) => {
         let dateObj = new Date();
-        if (item.originalTimestamp) dateObj = new Date(item.originalTimestamp);
+        if (item.originalTimestamp && item.originalTimestamp > 0) {
+            dateObj = new Date(item.originalTimestamp);
+        }
 
-        const horaInicio = dateObj.toLocaleTimeString('pt-BR', { hour12: false });
+        const horaInicio = (item.originalTimestamp && item.originalTimestamp > 0)
+            ? dateObj.toLocaleTimeString('pt-BR', { hour12: false })
+            : '-';
+
         let horaFim = horaInicio;
         if (item['Data Final'] && item['Data Final'] !== '-') {
             const parts = item['Data Final'].split(' ');
@@ -269,8 +310,9 @@ export const formatForExcel = (data: any[], mode: string) => {
         }
 
         return {
+            _uid: item._uid,
             raw: item,
-            dataStr: item['Data'] || item['Data Inicial'], // Data enviada pra tela
+            dataStr: item['Data'] || item['Data Inicial'],
             bomba: 'S10',
             horaInicio: horaInicio,
             horaFim: horaFim,
@@ -286,7 +328,7 @@ export const formatForExcel = (data: any[], mode: string) => {
     });
 
     if (mode === 'transcricao') {
-        return mappedData.sort((a, b) => (b.originalTimestamp || 0) - (a.originalTimestamp || 0));
+        return mappedData.sort((a, b) => (Number(b.originalTimestamp) || 0) - (Number(a.originalTimestamp) || 0));
     }
     return mappedData;
 };
