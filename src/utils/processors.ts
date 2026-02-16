@@ -1,22 +1,18 @@
 import Papa from 'papaparse';
 import { parseWlnContent, type WlnRecord } from './wlnParser';
 
-interface TankRecord {
-    timestamp: number;
-    volume: number;
-    rawDate: string;
-}
-
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const formatUnixDate = (timestamp: any) => {
-    if (!timestamp || timestamp == 0) return '-';
+    if (!timestamp || timestamp === 0) return '-';
     try {
         const timeVal = String(timestamp).length > 11 ? Number(timestamp) : Number(timestamp) * 1000;
         return new Date(timeVal).toLocaleString('pt-BR');
-    } catch (e) {
+    } catch {
         return String(timestamp);
     }
 };
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const calculateVolume = (final: any, start: any) => {
     const vol = (Number(final) - Number(start)) * 0.1;
     return isNaN(vol) ? 0 : Number(vol.toFixed(2));
@@ -28,8 +24,7 @@ export const processWlnFile = (file: File): Promise<WlnRecord[]> => {
         reader.onload = (e) => {
             const text = e.target?.result;
             if (typeof text === 'string') {
-                const data = parseWlnContent(text);
-                resolve(data);
+                resolve(parseWlnContent(text));
             } else {
                 reject(new Error("Falha ao ler WLN."));
             }
@@ -38,13 +33,21 @@ export const processWlnFile = (file: File): Promise<WlnRecord[]> => {
     });
 };
 
+interface TankRecord {
+    timestamp: number;
+    volume: number;
+    rawDate: string;
+}
+
 export const parseTankFile = (file: File): Promise<TankRecord[]> => {
     return new Promise((resolve, reject) => {
         Papa.parse(file, {
             header: true, delimiter: ";", skipEmptyLines: true,
             transformHeader: (h) => h.trim().replace(/"/g, ''),
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             complete: (results: any) => {
                 const records: TankRecord[] = [];
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 results.data.forEach((row: any) => {
                     const horaStr = row['Hora'] || row['Horário'] || row['Data'] || row['Time'];
                     const volStr = row['Estoque S10 Dura+'] || row['Tanque 1 - S10'] || row['Volume'] || row['Estoque'];
@@ -64,19 +67,28 @@ export const parseTankFile = (file: File): Promise<TankRecord[]> => {
                             if (!isNaN(ts) && !isNaN(volClean) && volClean > 0) {
                                 records.push({ timestamp: ts, volume: volClean, rawDate: horaStr });
                             }
-                        } catch (err) {}
+                        } catch {
+                            // ignora linha
+                        }
                     }
                 });
                 records.sort((a, b) => a.timestamp - b.timestamp);
                 resolve(records);
             },
-            error: (err: any) => reject(err)
+            error: (err: unknown) => reject(err)
         });
     });
 };
 
+const findClosestRecord = (records: TankRecord[], targetTs: number): TankRecord | null => {
+    if (records.length === 0) return null;
+    return records.reduce((prev, curr) => (Math.abs(curr.timestamp - targetTs) < Math.abs(prev.timestamp - targetTs) ? curr : prev));
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const reconciliateData = (wlnData: any[], tankData: TankRecord[]) => {
     const processedIDs = new Set<string>();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const results: any[] = [];
     const validRows = wlnData.filter(row => row.upar0 && Number(row.upar0) > 0);
 
@@ -117,16 +129,11 @@ export const reconciliateData = (wlnData: any[], tankData: TankRecord[]) => {
         });
     });
 
-    // ORDEM DECRESCENTE para o cruzamento de tanque (Necessário para a fórmula cascata do molde)
     return results.sort((a, b) => b.originalTimestamp - a.originalTimestamp);
 };
 
-const findClosestRecord = (records: TankRecord[], targetTs: number): TankRecord | null => {
-    if (records.length === 0) return null;
-    return records.reduce((prev, curr) => (Math.abs(curr.timestamp - targetTs) < Math.abs(prev.timestamp - targetTs) ? curr : prev));
-};
-
-export const processLogFile = (data: any[], mode: string, extraParams: any = {}) => {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const processLogFile = (data: any[], mode: string, extraParams: Record<string, any> = {}) => {
     switch (mode) {
         case 'normal': return processNormalSupply(data);
         case 'travado': return processLockedID(data, extraParams.startId || 0);
@@ -135,7 +142,9 @@ export const processLogFile = (data: any[], mode: string, extraParams: any = {})
     }
 };
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const processNormalSupply = (data: any[]) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result: any[] = [];
     const processedSignatures = new Set();
     data.forEach((row) => {
@@ -162,11 +171,12 @@ const processNormalSupply = (data: any[]) => {
             }
         }
     });
-    // ORDEM CRESCENTE para bomba normal
     return result.sort((a, b) => a.originalTimestamp - b.originalTimestamp);
 };
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const processLockedID = (data: any[], startIdInput: number) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const uniqueSupplies: any[] = [];
     const processedSignatures = new Set();
     let currentIdCounter = Number(startIdInput);
@@ -199,6 +209,7 @@ const processLockedID = (data: any[], startIdInput: number) => {
     return finalData.sort((a, b) => a.originalTimestamp - b.originalTimestamp);
 };
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const processManualTranscript = (data: any[]) => {
     const result = data.filter(row => row.upar0).map(row => {
         const rawTs = Number(row.upar3);
@@ -218,4 +229,59 @@ const processManualTranscript = (data: any[]) => {
         };
     });
     return result.sort((a, b) => b.originalTimestamp - a.originalTimestamp);
+};
+
+// EXPORT PRINCIPAL PARA O EXCELJS
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const formatForExcel = (data: any[], mode: string) => {
+    const sortedData = [...data].sort((a, b) => {
+        const timeA = a.originalTimestamp || 0;
+        const timeB = b.originalTimestamp || 0;
+        return timeA - timeB;
+    });
+
+    let medidorCorrente = 0;
+    for (const item of sortedData) {
+        const med = Number(item['Encerrante Inicial Bruto'] || item['Encerrante Inicial'] || 0);
+        if (med > 0) { medidorCorrente = med; break; }
+    }
+
+    const mappedData = sortedData.map((item) => {
+        let dateObj = new Date();
+        if (item.originalTimestamp) dateObj = new Date(item.originalTimestamp);
+
+        const horaInicio = dateObj.toLocaleTimeString('pt-BR', { hour12: false });
+        let horaFim = horaInicio;
+        if (item['Data Final'] && item['Data Final'] !== '-') {
+            const parts = item['Data Final'].split(' ');
+            if (parts.length > 1) horaFim = parts[1];
+        }
+
+        let medidorFinalDaLinha = 0;
+        if (mode === 'transcricao') {
+            medidorCorrente += Math.round((item['Volume (L)'] || 0) * 100);
+            medidorFinalDaLinha = medidorCorrente;
+        } else {
+            medidorFinalDaLinha = Number(item['Encerrante Final Bruto'] || item['Encerrante Final'] || 0);
+        }
+
+        return {
+            raw: item,
+            bomba: 'S10',
+            horaInicio: horaInicio,
+            horaFim: horaFim,
+            medidorFinal: medidorFinalDaLinha,
+            placa: item['Veículo (Cartão)'] || item['Veículo'] || '',
+            id: item['ID Operação'] || item['ID Original (Travado)'] || '',
+            frentista: item['Frentista'] || '',
+            odometro: item['Odômetro'] !== '-' ? Number(item['Odômetro']) : '',
+            volumeConciliado: item['Volume (L)'],
+            originalTimestamp: item.originalTimestamp
+        };
+    });
+
+    if (mode === 'transcricao') {
+        return mappedData.sort((a, b) => (b.originalTimestamp || 0) - (a.originalTimestamp || 0));
+    }
+    return mappedData;
 };

@@ -5,13 +5,16 @@ import { saveAs } from 'file-saver';
 import { toast, Toaster } from 'sonner';
 import { ArrowLeft, Download, FileSpreadsheet, Settings, X, Fuel, Edit3 } from 'lucide-react';
 
-import { processLogFile, processWlnFile, parseTankFile, reconciliateData } from './utils/processors';
+import { processLogFile, processWlnFile, formatForExcel, parseTankFile, reconciliateData } from './utils/processors';
 import { ModeSelector } from './components/ModeSelector';
 import { FileUpload } from './components/FileUpload';
 
 function App() {
     const [currentMode, setCurrentMode] = useState<string | null>(null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const [processedData, setProcessedData] = useState<any[]>([]);
+
+    // VARIÁVEL DE CARREGAMENTO VOLTOU A SER USADA NA TELA PARA EVITAR ERRO DO LINTER
     const [isProcessing, setIsProcessing] = useState(false);
     const [startIdInput, setStartIdInput] = useState<string>("");
 
@@ -22,7 +25,7 @@ function App() {
     const [pumpName, setPumpName] = useState("");
     const [fileNameClient, setFileNameClient] = useState("");
 
-    const handleRowEdit = (index: number, field: string, value: string) => {
+    const handleRowEdit = (index: number, field: string, value: string | number) => {
         const newData = [...processedData];
         newData[index] = { ...newData[index], [field]: value };
         setProcessedData(newData);
@@ -36,7 +39,6 @@ function App() {
         }
     };
 
-    // --- MÁGICA DO MOLDE INTERNO COM EXCELJS ---
     const confirmDownload = async () => {
         if (!pumpName.trim() || !fileNameClient.trim()) {
             toast.error("Preencha o Nome da Bomba e o Código do Cliente!");
@@ -44,82 +46,80 @@ function App() {
         }
 
         try {
-            // Busca o molde na pasta public
             const response = await fetch('/Molde_Vazio.xlsx');
             if (!response.ok) throw new Error("Molde não encontrado.");
             const arrayBuffer = await response.arrayBuffer();
 
             const workbook = new ExcelJS.Workbook();
             await workbook.xlsx.load(arrayBuffer);
-            const ws = workbook.worksheets[0]; // Planilha 1
+            const ws = workbook.worksheets[0];
+
+            const cleanData = formatForExcel(processedData, currentMode || 'normal');
 
             let medidorCorrente = 0;
             if (currentMode === 'transcricao') {
-                // Cascata decrescente para D2
                 medidorCorrente = 0;
             } else {
-                // Pegar o primeiro medidor do modo normal
-                const first = processedData.find(d => Number(d['Encerrante Inicial Bruto']) > 0);
-                medidorCorrente = first ? Number(first['Encerrante Inicial Bruto']) : 0;
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const first = cleanData.find((d: any) => Number(d.raw['Encerrante Inicial Bruto']) > 0);
+                medidorCorrente = first ? Number(first.raw['Encerrante Inicial Bruto']) : 0;
             }
 
-            // Injeta o D2 (Setup)
             ws.getCell('D2').value = medidorCorrente;
 
-            const formatTime = (dateStr: string) => {
-                if (!dateStr || dateStr === '-') return "";
-                const timePart = dateStr.split(' ')[1] || dateStr;
+            // TIPAGEM CORRIGIDA PARA ACEITAR NUMEROS E TEXTOS
+            const formatTime = (timeStr: string | number | undefined | null) => {
+                if (!timeStr || timeStr === '-') return "";
+                const str = String(timeStr);
+                const timePart = str.split(' ')[1] || str;
                 const parts = timePart.split(':');
                 if (parts.length >= 2) return `${parts[0]}:${parts[1]}`;
-                return dateStr;
+                return str;
             };
 
-            processedData.forEach((item, index) => {
-                const r = index + 3; // Começa na linha 3 do Excel
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            cleanData.forEach((item: any, index: number) => {
+                const r = index + 3;
                 const row = ws.getRow(r);
 
                 let medidorCol = 0;
                 if (currentMode === 'transcricao') {
-                    // Cálculo da cascata decrescente
-                    medidorCorrente += Math.round((item['Volume (L)'] || 0) * 100);
+                    medidorCorrente += Math.round((item.volumeConciliado || 0) * 100);
                     medidorCol = medidorCorrente;
                 } else {
-                    medidorCol = Number(item['Encerrante Final Bruto'] || 0);
+                    medidorCol = Number(item.raw['Encerrante Final Bruto'] || 0);
                 }
 
-                // INJEÇÃO CIRÚRGICA APENAS DOS VALORES. F, G e H FICAM INTACTOS!
-                row.getCell(1).value = pumpName.trim();                          // A: Bomba
-                row.getCell(2).value = formatTime(item['Data'] || item['Data Inicial']); // B: Inicio
-                row.getCell(3).value = formatTime(item['Data Final']);           // C: Fim
-                row.getCell(4).value = medidorCol;                               // D: Medidor
+                row.getCell(1).value = pumpName.trim();
+                row.getCell(2).value = formatTime(item.horaInicio);
+                row.getCell(3).value = formatTime(item.horaFim);
+                row.getCell(4).value = medidorCol;
 
-                row.getCell(9).value = item['Veículo (Cartão)'] || item['Veículo'] || ''; // I: Placa
+                row.getCell(9).value = item.placa;
 
-                const idVal = Number(item['ID Operação'] || item['ID Original (Travado)']);
-                row.getCell(11).value = isNaN(idVal) ? idVal : idVal;            // K: ID
+                const idVal = Number(item.id);
+                row.getCell(11).value = isNaN(idVal) ? item.id : idVal;
 
-                row.getCell(12).value = item['Frentista'] || '';                 // L: Frentista
-                row.getCell(13).value = item['Odômetro'] !== '-' ? Number(item['Odômetro']) : ''; // M: Odo
+                row.getCell(12).value = item.frentista;
+                row.getCell(13).value = item.odometro !== '' ? Number(item.odometro) : '';
 
-                row.commit(); // Salva a linha no buffer
+                row.commit();
             });
 
-            // Montagem do nome do arquivo
-            const d = processedData[0]?.originalTimestamp ? new Date(processedData[0].originalTimestamp) : new Date();
+            const d = cleanData[0]?.originalTimestamp ? new Date(cleanData[0].originalTimestamp) : new Date();
             const dia = String(d.getDate()).padStart(2,'0');
             const mes = String(d.getMonth()+1).padStart(2,'0');
             const ano = d.getFullYear();
             const clientCode = fileNameClient.trim().replace(/\s+/g, '');
             const nomeArquivo = `Planilha insercao de abastecimento_S10_${clientCode}_${dia}${mes}${ano}.xlsx`;
 
-            // Exportação limpa
             const buffer = await workbook.xlsx.writeBuffer();
             saveAs(new Blob([buffer]), nomeArquivo);
 
             toast.success(`Planilha gerada com sucesso a partir do molde!`);
             setIsModalOpen(false);
 
-        } catch (error: any) {
+        } catch (error) {
             console.error(error);
             toast.error("Erro ao gerar. Certifique-se de que o 'Molde_Vazio.xlsx' está na pasta 'public'.");
         }
@@ -141,11 +141,12 @@ function App() {
             setProcessedData(mergedData);
             if (mergedData.length > 0) toast.success(`Conciliação concluída! Edite as placas se necessário.`);
             else toast.warning("Nenhum abastecimento encontrado no cruzamento.");
-        } catch (error: any) {
-            console.error(error);
-            toast.error("Erro na conciliação: " + error.message);
+        } catch (error) {
+            const err = error as Error;
+            toast.error("Erro na conciliação: " + err.message);
+        } finally {
+            setIsProcessing(false);
         }
-        setIsProcessing(false);
     };
 
     const handleFileSelect = async (file: File) => {
@@ -165,7 +166,9 @@ function App() {
         setProcessedData([]);
 
         if (currentMode === 'travado' && !startIdInput) {
-            toast.error("ID inicial obrigatório."); setIsProcessing(false); return;
+            toast.error("ID inicial obrigatório.");
+            setIsProcessing(false);
+            return;
         }
 
         try {
@@ -180,16 +183,23 @@ function App() {
             } else {
                 Papa.parse(file, {
                     header: true, skipEmptyLines: true, delimiter: ";", transformHeader: h => h.trim(),
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
                     complete: (res: any) => {
                         const clean = processLogFile(res.data, currentMode || 'normal', { startId: Number(startIdInput) });
                         setProcessedData(clean);
                         toast.success(`${clean.length} registros processados.`);
                     },
-                    error: (err: any) => { toast.error("Erro CSV."); setIsProcessing(false); }
+                    error: (err: Error) => {
+                        toast.error("Erro CSV: " + err.message);
+                    }
                 });
             }
-        } catch (e) { toast.error("Erro ao processar."); }
-        setIsProcessing(false);
+        } catch (error) {
+            console.error(error);
+            toast.error("Erro ao processar arquivo.");
+        } finally {
+            setIsProcessing(false);
+        }
     };
 
     return (
@@ -231,7 +241,7 @@ function App() {
                                         </div>
                                     </div>
 
-                                    {wlnFile && tankFile && processedData.length === 0 && (
+                                    {wlnFile && tankFile && processedData.length === 0 && !isProcessing && (
                                         <button onClick={handleProcessConciliation} className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-blue-200 transition-all active:scale-95">
                                             Processar Conciliação
                                         </button>
@@ -246,6 +256,13 @@ function App() {
                                     )}
                                     <FileUpload onFileSelect={handleFileSelect} />
                                 </>
+                            )}
+
+                            {/* ESTA É A LINHA QUE CORRIGE O ERRO DE VARIÁVEL NUNCA USADA */}
+                            {isProcessing && (
+                                <div className="mt-8 mb-4 p-4 text-center font-bold text-blue-600 bg-blue-50 rounded-xl animate-pulse">
+                                    Processando dados, por favor aguarde...
+                                </div>
                             )}
 
                             {processedData.length > 0 && (
@@ -276,7 +293,8 @@ function App() {
                                             </tr>
                                             </thead>
                                             <tbody>
-                                            {processedData.map((row, i) => (
+                                            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                                            {processedData.map((row: any, i: number) => (
                                                 <tr key={i} className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
                                                     <td className="px-4 py-3 whitespace-nowrap">{row['Data'] || row['Data Inicial']}</td>
                                                     <td className="px-4 py-3 whitespace-nowrap font-mono">{row['ID Operação'] || row['ID Original (Travado)']}</td>
