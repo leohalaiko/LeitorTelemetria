@@ -64,7 +64,6 @@ function App() {
             if (templateFile) {
                 arrayBuffer = await templateFile.arrayBuffer();
             } else {
-                // Puxando o seu arquivo Molde_Vazio2.xlsx (ou Molde_Vazio.xlsx se você voltou o nome)
                 const response = await fetch(`/Molde_Vazio.xlsx?v=${Date.now()}`);
                 if (!response.ok) {
                     setNeedsManualMolde(true);
@@ -76,6 +75,11 @@ function App() {
 
             const workbook = new ExcelJS.Workbook();
             await workbook.xlsx.load(arrayBuffer);
+
+            if (workbook.calcProperties) {
+                workbook.calcProperties.fullCalcOnLoad = true;
+            }
+
             const ws = workbook.worksheets[0];
 
             const d = displayData[0]?.originalTimestamp ? new Date(displayData[0].originalTimestamp) : new Date();
@@ -95,13 +99,31 @@ function App() {
             }
             ws.getCell('D2').value = medidorSetup;
 
-            const formatTime = (timeStr: string | number | undefined | null) => {
-                if (!timeStr || timeStr === '-') return "";
+            // 🚀 NOVA MÁGICA DE HORA: Transforma o texto na Fração Decimal Nativa do Excel! 🚀
+            const getExcelTimeFraction = (timeStr: string | number | undefined | null) => {
+                if (!timeStr || timeStr === '-') return null;
                 const str = String(timeStr);
                 const timePart = str.split(' ')[1] || str;
                 const parts = timePart.split(':');
-                if (parts.length >= 2) return `${parts[0]}:${parts[1]}`;
-                return str;
+                if (parts.length >= 2) {
+                    const h = Number(parts[0]);
+                    const m = Number(parts[1]);
+                    if (!isNaN(h) && !isNaN(m)) {
+                        return (h / 24) + (m / 1440); // Matemática que o ATS exige
+                    }
+                }
+                return null;
+            };
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const cleanValue = (val: any) => {
+                if (val === null || val === undefined || val === '') return null;
+                if (typeof val === 'number') return val;
+                const strVal = String(val).trim();
+                if (strVal !== '' && !isNaN(Number(strVal))) {
+                    return Number(strVal);
+                }
+                return strVal;
             };
 
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -109,11 +131,10 @@ function App() {
                 const r = index + 3;
                 const row = ws.getRow(r);
 
-                // --- PINCEL DE FORMATAÇÃO AUTOMÁTICO ---
-                // Se a linha for maior que 3, clona o estilo da linha 3 (fontes, cores, vermelho da placa, etc)
+                // --- O PINCEL DE FORMATAÇÃO VOLTOU! ---
                 if (r > 3) {
                     const baseRow = ws.getRow(3);
-                    for (let col = 1; col <= 13; col++) { // São 13 colunas na nossa planilha
+                    for (let col = 1; col <= 13; col++) {
                         row.getCell(col).style = baseRow.getCell(col).style;
                     }
                 }
@@ -125,33 +146,43 @@ function App() {
                     medidorCol = Number(item.raw['Encerrante Final Bruto'] || 0);
                 }
 
-                row.getCell(1).value = String(pumpName).trim();
-                row.getCell(2).value = formatTime(item.horaInicio);
-                row.getCell(3).value = formatTime(item.horaFim);
+                row.getCell(1).value = pumpName ? String(pumpName).trim() : null;
+
+                // INJEÇÃO BLINDADA DA HORA: Forçando o tipo para "Personalizado (hh:mm)"
+                const startFraction = getExcelTimeFraction(item.horaInicio);
+                const cellInicio = row.getCell(2);
+                cellInicio.value = startFraction;
+                if (startFraction !== null) cellInicio.numFmt = 'hh:mm'; // <-- Carimbo do Formato
+
+                const endFraction = getExcelTimeFraction(item.horaFim);
+                const cellFim = row.getCell(3);
+                cellFim.value = endFraction;
+                if (endFraction !== null) cellFim.numFmt = 'hh:mm'; // <-- Carimbo do Formato
+
                 row.getCell(4).value = medidorCol;
 
                 row.getCell(6).value = Number(item.medidorInicial);
                 row.getCell(7).value = Number(item.medidorFinal);
                 row.getCell(8).value = Number(item.volumeConciliado);
 
-                row.getCell(9).value = item.placa ? String(item.placa).trim() : '';
+                row.getCell(9).value = cleanValue(item.placa);
 
                 const idVal = Number(item.id);
-                row.getCell(11).value = isNaN(idVal) ? item.id : idVal;
+                row.getCell(11).value = isNaN(idVal) ? cleanValue(item.id) : idVal;
 
-                row.getCell(12).value = item.frentista ? String(item.frentista).trim() : '';
-                row.getCell(13).value = item.odometro !== '' ? Number(item.odometro) : '';
-
-                row.commit();
+                row.getCell(12).value = cleanValue(item.frentista);
+                row.getCell(13).value = (item.odometro && item.odometro !== '-' && item.odometro !== '') ? Number(item.odometro) : null;
             });
 
             const clientCode = fileNameClient.trim().replace(/\s+/g, '');
             const nomeArquivo = `Planilha insercao de abastecimento_S10_${clientCode}_${dia}${mes}${ano}.xlsx`;
 
             const buffer = await workbook.xlsx.writeBuffer();
-            saveAs(new Blob([buffer]), nomeArquivo);
 
-            toast.success(`Planilha gerada com a formatação perfeita!`);
+            const excelMimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+            saveAs(new Blob([buffer], { type: excelMimeType }), nomeArquivo);
+
+            toast.success(`Planilha gerada com Sucesso!`);
             setIsModalOpen(false);
 
         } catch (error) {
