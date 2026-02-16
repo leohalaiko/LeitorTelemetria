@@ -1,5 +1,5 @@
 import React from 'react';
-import { Fuel, AlertTriangle, Lock, FileCode, ClipboardEdit } from 'lucide-react'; // Adicionei ClipboardEdit
+import { Fuel, Lock, FileCode, ClipboardEdit } from 'lucide-react'; // Removi o AlertTriangle que era do card cinza
 
 interface ModeSelectorProps {
     onSelectMode: (mode: string) => void;
@@ -17,9 +17,9 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({ onSelectMode }) => {
             disabled: false
         },
         {
-            id: 'transcricao', // <--- NOVO MODO
-            title: 'Transcrição Manual (Fluxômetro OFF)',
-            desc: 'Gera o Excel com TODOS os registros para edição manual da litragem.',
+            id: 'transcricao', // Mantemos a mesma ID interna para não quebrar a lógica do App.tsx!
+            title: 'Sem Encerrante (Sonda / Transcrição)',
+            desc: 'Cruza telemetria (WLN) com nível de tanque (CSV) para calcular litragem e gerar encerrantes.',
             icon: <ClipboardEdit className="w-8 h-8 text-orange-500" />,
             color: 'hover:border-orange-500 hover:bg-orange-50',
             bgIcon: 'bg-orange-50',
@@ -42,15 +42,6 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({ onSelectMode }) => {
             color: 'hover:border-indigo-500 hover:bg-indigo-50',
             bgIcon: 'bg-indigo-50',
             disabled: false
-        },
-        {
-            id: 'sonda',
-            title: 'Sem Encerrante (Sonda)',
-            desc: 'Funcionalidade em desenvolvimento (Requer Arqueação)',
-            icon: <AlertTriangle className="w-8 h-8 text-gray-400" />,
-            color: 'border-gray-100 bg-gray-50 opacity-60 cursor-not-allowed',
-            bgIcon: 'bg-gray-200',
-            disabled: true
         }
     ];
 
