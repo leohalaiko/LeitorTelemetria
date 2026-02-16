@@ -20,15 +20,11 @@ const calculateVolume = (final: any, start: any) => {
     return isNaN(vol) ? 0 : Number(vol.toFixed(2));
 };
 
-// ==========================================
-// O SEU BACKUP DE TRAMA ESTÁ AQUI
-// ==========================================
 const enrichWlnData = (data: WlnRecord[]) => {
     const chronological = [...data].sort((a, b) => a.timestamp - b.timestamp);
     let lastPumpOnTs = 0;
 
     chronological.forEach(row => {
-        // Mapeia o momento exato em que a bomba ligou (I/O terminando em 'e')
         const io = row['i/o'] || row['io'];
         if (typeof io === 'string') {
             if (io.includes('/e') || io.endsWith('e')) {
@@ -36,14 +32,17 @@ const enrichWlnData = (data: WlnRecord[]) => {
             }
         }
 
-        // Se acharmos um abastecimento e o tempo estiver corrompido (0), usamos o backup!
         if (row.upar0) {
+            // Salva a hora bruta original para o Relatório de Diagnóstico
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (row as any)._originalUpar3 = row.upar3 ? Number(row.upar3) : 0;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (row as any)._originalUpar5 = row.upar5 ? Number(row.upar5) : 0;
+
             if (!row.upar3 || Number(row.upar3) === 0) {
-                // Se achou o '/e', usa a hora dele. Se não, subtrai 2 minutos por segurança.
                 row.upar3 = lastPumpOnTs > 0 ? lastPumpOnTs : row.timestamp - (2 * 60 * 1000);
             }
             if (!row.upar5 || Number(row.upar5) === 0) {
-                // A hora final é a hora que a trama do abastecimento chegou no servidor
                 row.upar5 = row.timestamp;
             }
         }
@@ -59,7 +58,7 @@ export const processWlnFile = (file: File): Promise<WlnRecord[]> => {
             const text = e.target?.result;
             if (typeof text === 'string') {
                 const parsed = parseWlnContent(text);
-                const enriched = enrichWlnData(parsed); // Aplica a vacina contra horas zeradas
+                const enriched = enrichWlnData(parsed);
                 resolve(enriched);
             } else {
                 reject(new Error("Falha ao ler WLN."));
@@ -331,4 +330,137 @@ export const formatForExcel = (data: any[], mode: string) => {
         return mappedData.sort((a, b) => (Number(b.originalTimestamp) || 0) - (Number(a.originalTimestamp) || 0));
     }
     return mappedData;
+};
+
+// ==========================================
+// 🚀 MOTOR DE DIAGNÓSTICO (ATUALIZADO COM RAIO-X) 🚀
+// ==========================================
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const runDiagnostics = (rawData: any[]) => {
+    // 1. FILTRO ANTI-ECO (Deduplicação de sujeira da rede)
+    const supplies = rawData.filter(row => row.upar0 && Number(row.upar0) > 0);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const uniqueSupplies: any[] = [];
+    const processedSignatures = new Set();
+
+    supplies.forEach(row => {
+        const currentId = Number(row.upar0);
+        const encIni = Number(row.upar4) || 0;
+        const origUpar3 = row._originalUpar3 !== undefined ? row._originalUpar3 : Number(row.upar3);
+
+        // Assinatura única para ignorar quando a placa repete a mesma informação
+        const signature = `${currentId}-${origUpar3}-${encIni}`;
+        if (!processedSignatures.has(signature)) {
+            processedSignatures.add(signature);
+            uniqueSupplies.push(row);
+        }
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const diagnostics: any[] = [];
+    let lastId: number | null = null;
+    let lastTime: number | null = null;
+    let lastEncIni: number | null = null;
+
+    // Função Ajudante para extrair os dados formatados para a Tabela de Raio-X
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const formatContextRow = (row: any) => {
+        if (!row) return null;
+        const origUpar3 = row._originalUpar3 !== undefined ? row._originalUpar3 : Number(row.upar3);
+        const encIni = Number(row.upar4) || 0;
+        const encFim = Number(row.upar6) || 0;
+        let vol = calculateVolume(encFim, encIni);
+        if (vol < 0) vol = 0;
+
+        return {
+            id: row.upar0,
+            inicio: formatUnixDate(origUpar3 > 0 ? origUpar3 : row.upar3),
+            encIni,
+            encFim,
+            vol,
+            pwr: row.pwr_ext !== undefined ? `${row.pwr_ext}V` : '-'
+        };
+    };
+
+    // 2. AUDITORIA PROFUNDA NAS LINHAS ÚNICAS
+    uniqueSupplies.forEach((row, index, array) => {
+        const errors: string[] = [];
+        const warnings: string[] = [];
+
+        const currentId = Number(row.upar0);
+        const encIni = Number(row.upar4) || 0;
+        const encFim = Number(row.upar6) || 0;
+        const origUpar3 = row._originalUpar3 !== undefined ? row._originalUpar3 : Number(row.upar3);
+        const origUpar5 = row._originalUpar5 !== undefined ? row._originalUpar5 : Number(row.upar5);
+
+        // A. Validação de ID Travado
+        if (lastId === currentId) {
+            if (lastTime !== origUpar3 || lastEncIni !== encIni) {
+                errors.push(`ID Travado (A placa não incrementou o ID. Gerou o mesmo ID ${currentId} para um novo abastecimento)`);
+            }
+        }
+        lastId = currentId;
+        lastTime = origUpar3;
+        lastEncIni = encIni;
+
+        // B. Validação de Encerrantes
+        if (encIni === 0) errors.push("Encerrante Inicial Zerado (upar4 = 0)");
+        if (encFim === 0) errors.push("Encerrante Final Zerado (upar6 = 0)");
+        if (encIni > 0 && encFim > 0 && encIni === encFim) {
+            errors.push("Encerrante Travado (Inicial é igual ao Final, o fluxômetro não registrou volume)");
+        }
+
+        // C. Hora Zerada
+        if (!origUpar3 || origUpar3 === 0) {
+            errors.push("Hora Inicial Zerada (O upar3 chegou corrompido/zerado da telemetria)");
+        }
+        if (!origUpar5 || origUpar5 === 0) {
+            errors.push("Hora Final Zerada (O upar5 chegou corrompido/zerado da telemetria)");
+        }
+
+        // D. Oscilação e Queda de Energia (Lógica do Galileosky)
+        const pwrExt = row.pwr_ext !== undefined ? Number(row.pwr_ext) : null;
+        const pwrInt = row.pwr_int !== undefined ? Number(row.pwr_int) : null;
+
+        if (pwrExt !== null) {
+            if (pwrExt < 7) {
+                errors.push(`Queda de Energia Elétrica: Tensão da automação caiu para nível crítico (${pwrExt}V).`);
+            } else if (pwrExt < 10) {
+                warnings.push(`Oscilação de Energia: Tensão da automação abaixo do ideal (${pwrExt}V).`);
+            }
+        }
+
+        if (pwrInt !== null) {
+            if (pwrInt < 3) {
+                errors.push(`Falha no Galileosky: Tensão interna do equipamento crítica (${pwrInt}V).`);
+            }
+        }
+
+        let vol = calculateVolume(encFim, encIni);
+        if (vol < 0) vol = 0;
+
+        // Captura o Contexto (Linha Anterior e Linha Posterior da Matriz Limpa)
+        const prevRow = index > 0 ? array[index - 1] : null;
+        const nextRow = index < array.length - 1 ? array[index + 1] : null;
+
+        diagnostics.push({
+            uid: row._uid || Math.random().toString(36),
+            id: currentId,
+            placa: row.upar1 || 'N/A',
+            dataInicio: formatUnixDate(origUpar3 > 0 ? origUpar3 : row.upar3),
+            volumeCalculado: vol,
+            errors,
+            warnings,
+            isOk: errors.length === 0 && warnings.length === 0,
+            hasWarningOnly: errors.length === 0 && warnings.length > 0,
+            // Adicionado o pacote de Contexto para a UI!
+            context: {
+                prev: formatContextRow(prevRow),
+                current: formatContextRow(row),
+                next: formatContextRow(nextRow)
+            }
+        });
+    });
+
+    return diagnostics;
 };

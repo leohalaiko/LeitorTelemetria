@@ -3,9 +3,9 @@ import Papa from 'papaparse';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 import { toast, Toaster } from 'sonner';
-import { ArrowLeft, Download, FileSpreadsheet, Settings, X, Fuel, Edit3 } from 'lucide-react';
+import { ArrowLeft, Download, FileSpreadsheet, Settings, X, Fuel, Edit3, CheckCircle, AlertOctagon } from 'lucide-react';
 
-import { processLogFile, processWlnFile, formatForExcel, parseTankFile, reconciliateData } from './utils/processors';
+import { processLogFile, processWlnFile, formatForExcel, parseTankFile, reconciliateData, runDiagnostics } from './utils/processors';
 import { ModeSelector } from './components/ModeSelector';
 import { FileUpload } from './components/FileUpload';
 
@@ -13,6 +13,9 @@ function App() {
     const [currentMode, setCurrentMode] = useState<string | null>(null);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const [processedData, setProcessedData] = useState<any[]>([]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [diagnosticData, setDiagnosticData] = useState<any[]>([]);
 
     const [isProcessing, setIsProcessing] = useState(false);
     const [startIdInput, setStartIdInput] = useState<string>("");
@@ -99,7 +102,6 @@ function App() {
             }
             ws.getCell('D2').value = medidorSetup;
 
-            // 🚀 NOVA MÁGICA DE HORA: Transforma o texto na Fração Decimal Nativa do Excel! 🚀
             const getExcelTimeFraction = (timeStr: string | number | undefined | null) => {
                 if (!timeStr || timeStr === '-') return null;
                 const str = String(timeStr);
@@ -109,7 +111,7 @@ function App() {
                     const h = Number(parts[0]);
                     const m = Number(parts[1]);
                     if (!isNaN(h) && !isNaN(m)) {
-                        return (h / 24) + (m / 1440); // Matemática que o ATS exige
+                        return (h / 24) + (m / 1440);
                     }
                 }
                 return null;
@@ -131,7 +133,6 @@ function App() {
                 const r = index + 3;
                 const row = ws.getRow(r);
 
-                // --- O PINCEL DE FORMATAÇÃO VOLTOU! ---
                 if (r > 3) {
                     const baseRow = ws.getRow(3);
                     for (let col = 1; col <= 13; col++) {
@@ -148,16 +149,15 @@ function App() {
 
                 row.getCell(1).value = pumpName ? String(pumpName).trim() : null;
 
-                // INJEÇÃO BLINDADA DA HORA: Forçando o tipo para "Personalizado (hh:mm)"
                 const startFraction = getExcelTimeFraction(item.horaInicio);
                 const cellInicio = row.getCell(2);
                 cellInicio.value = startFraction;
-                if (startFraction !== null) cellInicio.numFmt = 'hh:mm'; // <-- Carimbo do Formato
+                if (startFraction !== null) cellInicio.numFmt = 'hh:mm';
 
                 const endFraction = getExcelTimeFraction(item.horaFim);
                 const cellFim = row.getCell(3);
                 cellFim.value = endFraction;
-                if (endFraction !== null) cellFim.numFmt = 'hh:mm'; // <-- Carimbo do Formato
+                if (endFraction !== null) cellFim.numFmt = 'hh:mm';
 
                 row.getCell(4).value = medidorCol;
 
@@ -231,6 +231,7 @@ function App() {
 
         setIsProcessing(true);
         setProcessedData([]);
+        setDiagnosticData([]);
 
         if (currentMode === 'travado' && !startIdInput) {
             toast.error("ID inicial obrigatório.");
@@ -242,11 +243,20 @@ function App() {
             const isWlnFile = file.name.toLowerCase().endsWith('.wln');
             if (currentMode === 'wln' || isWlnFile) {
                 const data = await processWlnFile(file);
-                if (data.length > 0) {
-                    const cleanData = processLogFile(data, currentMode || 'normal', { startId: Number(startIdInput) });
-                    setProcessedData(cleanData.length > 0 ? cleanData : data);
-                    toast.success(`${cleanData.length || data.length} registros processados.`);
+
+                if (currentMode === 'wln') {
+                    const diags = runDiagnostics(data);
+                    setDiagnosticData(diags);
+                    if (diags.length > 0) toast.success(`Diagnóstico concluído: ${diags.length} abastecimentos analisados.`);
+                    else toast.warning("Nenhum abastecimento encontrado no arquivo.");
+                } else {
+                    if (data.length > 0) {
+                        const cleanData = processLogFile(data, currentMode || 'normal', { startId: Number(startIdInput) });
+                        setProcessedData(cleanData.length > 0 ? cleanData : data);
+                        toast.success(`${cleanData.length || data.length} registros processados.`);
+                    }
                 }
+
             } else {
                 Papa.parse(file, {
                     header: true, skipEmptyLines: true, delimiter: ";", transformHeader: h => h.trim(),
@@ -284,7 +294,7 @@ function App() {
                     <ModeSelector onSelectMode={setCurrentMode} />
                 ) : (
                     <div className="animate-fade-in-up">
-                        <button onClick={() => { setCurrentMode(null); setProcessedData([]); setStartIdInput(""); setWlnFile(null); setTankFile(null); }} className="mb-6 flex items-center text-gray-500 hover:text-blue-600 font-medium">
+                        <button onClick={() => { setCurrentMode(null); setProcessedData([]); setDiagnosticData([]); setStartIdInput(""); setWlnFile(null); setTankFile(null); }} className="mb-6 flex items-center text-gray-500 hover:text-blue-600 font-medium">
                             <ArrowLeft className="w-5 h-5 mr-2" /> Voltar
                         </button>
 
@@ -331,7 +341,140 @@ function App() {
                                 </div>
                             )}
 
-                            {displayData.length > 0 && (
+                            {/* ======================================================= */}
+                            {/* 🚀 PAINEL DE DIAGNÓSTICO (COM RAIO-X DE TELEMETRIA) 🚀 */}
+                            {/* ======================================================= */}
+                            {currentMode === 'wln' && diagnosticData.length > 0 && (
+                                <div className="mt-8 animate-fade-in-up">
+                                    <div className="mb-6">
+                                        <h2 className="text-2xl font-extrabold text-gray-800">Health Check da Bomba</h2>
+                                        <p className="text-gray-500">Relatório de falhas e inconsistências puras na telemetria.</p>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 gap-4 max-h-[600px] overflow-y-auto pr-2">
+                                        {diagnosticData.map((diag) => {
+                                            const cardBorder = diag.isOk ? 'border-green-500' : (diag.errors.length > 0 ? 'border-red-500' : 'border-yellow-500');
+                                            const iconColor = diag.isOk ? 'bg-green-100 text-green-600' : (diag.errors.length > 0 ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-600');
+
+                                            return (
+                                                <div key={diag.uid} className={`p-5 rounded-2xl border-l-8 shadow-sm bg-white ${cardBorder}`}>
+                                                    <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
+                                                        <div className="flex items-center gap-4">
+                                                            <div className={`p-3 rounded-full ${iconColor}`}>
+                                                                {diag.isOk ? <CheckCircle className="w-6 h-6" /> : <AlertOctagon className="w-6 h-6" />}
+                                                            </div>
+                                                            <div>
+                                                                <h3 className="font-bold text-lg text-gray-800 flex items-center gap-2">
+                                                                    Abastecimento #{diag.id}
+                                                                </h3>
+                                                                <p className="text-sm text-gray-500 font-medium mt-1">
+                                                                    Placa: <span className="text-gray-800">{diag.placa}</span> |
+                                                                    Vol: <span className="text-gray-800">{diag.volumeCalculado} L</span> |
+                                                                    Início: {diag.dataInicio}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex gap-2 mt-3 md:mt-0 flex-wrap">
+                                                            {diag.isOk ? (
+                                                                <span className="bg-green-100 text-green-800 text-sm px-4 py-1.5 rounded-full font-bold whitespace-nowrap">TUDO OK</span>
+                                                            ) : (
+                                                                <>
+                                                                    {diag.errors.length > 0 && <span className="bg-red-100 text-red-800 text-sm px-4 py-1.5 rounded-full font-bold whitespace-nowrap">{diag.errors.length} ERRO(S)</span>}
+                                                                    {diag.warnings.length > 0 && <span className="bg-yellow-100 text-yellow-800 text-sm px-4 py-1.5 rounded-full font-bold whitespace-nowrap">{diag.warnings.length} ALERTA(S)</span>}
+                                                                </>
+                                                            )}
+                                                        </div>
+                                                    </div>
+
+                                                    {/* O NOVO BLOCO QUE EXIBE A AUDITORIA TÉCNICA SE HOUVER UM ERRO OU AVISO */}
+                                                    {!diag.isOk && (
+                                                        <div className="mt-5 pt-4 border-t border-gray-100 space-y-4">
+                                                            <div className="space-y-2">
+                                                                {diag.errors.map((err: string, i: number) => (
+                                                                    <div key={`err-${i}`} className="flex items-center text-sm text-red-700 bg-red-50 p-3 rounded-xl border border-red-100">
+                                                                        <span className="mr-3 text-lg">🔴</span> <span className="font-medium">{err}</span>
+                                                                    </div>
+                                                                ))}
+                                                                {diag.warnings.map((warn: string, i: number) => (
+                                                                    <div key={`warn-${i}`} className="flex items-center text-sm text-yellow-700 bg-yellow-50 p-3 rounded-xl border border-yellow-100">
+                                                                        <span className="mr-3 text-lg">⚠️</span> <span className="font-medium">{warn}</span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+
+                                                            {/* 🔍 TABELA RAIO-X DE TELEMETRIA 🔍 */}
+                                                            <div className="border border-gray-200 rounded-xl overflow-hidden mt-4 shadow-sm">
+                                                                <div className="bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 border-b border-gray-200 flex flex-col md:flex-row md:items-center justify-between gap-1">
+                                                                    <span>🔍 Raio-X da Telemetria (Contexto)</span>
+                                                                    <span className="font-normal text-slate-500">Mostrando o abastecimento anterior e o próximo</span>
+                                                                </div>
+                                                                <div className="overflow-x-auto">
+                                                                    <table className="w-full text-left bg-white whitespace-nowrap">
+                                                                        <thead className="bg-slate-50 text-slate-500 text-xs">
+                                                                        <tr>
+                                                                            <th className="px-4 py-2 font-semibold">Posição</th>
+                                                                            <th className="px-4 py-2 font-semibold">ID</th>
+                                                                            <th className="px-4 py-2 font-semibold">Início</th>
+                                                                            <th className="px-4 py-2 font-semibold">Enc. Inicial</th>
+                                                                            <th className="px-4 py-2 font-semibold">Enc. Final</th>
+                                                                            <th className="px-4 py-2 font-semibold">Volume</th>
+                                                                            <th className="px-4 py-2 font-semibold">Energia (Ext)</th>
+                                                                        </tr>
+                                                                        </thead>
+                                                                        <tbody>
+                                                                        {/* LINHA ANTERIOR */}
+                                                                        {diag.context.prev && (
+                                                                            <tr className="border-b border-gray-100 text-slate-500 text-xs hover:bg-slate-50">
+                                                                                <td className="px-4 py-2 font-medium">Anterior</td>
+                                                                                <td className="px-4 py-2 font-mono">{diag.context.prev.id}</td>
+                                                                                <td className="px-4 py-2">{diag.context.prev.inicio}</td>
+                                                                                <td className="px-4 py-2 font-mono">{diag.context.prev.encIni}</td>
+                                                                                <td className="px-4 py-2 font-mono">{diag.context.prev.encFim}</td>
+                                                                                <td className="px-4 py-2">{diag.context.prev.vol} L</td>
+                                                                                <td className="px-4 py-2 font-mono">{diag.context.prev.pwr}</td>
+                                                                            </tr>
+                                                                        )}
+
+                                                                        {/* LINHA ATUAL (COM DEFEITO) */}
+                                                                        <tr className={`border-b border-gray-100 text-xs font-medium ${diag.errors.length > 0 ? 'bg-red-50 text-red-900' : 'bg-yellow-50 text-yellow-900'}`}>
+                                                                            <td className="px-4 py-2 font-bold flex items-center gap-1">👉 Atual</td>
+                                                                            <td className="px-4 py-2 font-mono font-bold">{diag.context.current.id}</td>
+                                                                            <td className="px-4 py-2">{diag.context.current.inicio}</td>
+                                                                            <td className="px-4 py-2 font-mono">{diag.context.current.encIni}</td>
+                                                                            <td className="px-4 py-2 font-mono">{diag.context.current.encFim}</td>
+                                                                            <td className="px-4 py-2">{diag.context.current.vol} L</td>
+                                                                            <td className="px-4 py-2 font-bold font-mono">{diag.context.current.pwr}</td>
+                                                                        </tr>
+
+                                                                        {/* LINHA PRÓXIMA */}
+                                                                        {diag.context.next && (
+                                                                            <tr className="text-slate-500 text-xs hover:bg-slate-50">
+                                                                                <td className="px-4 py-2 font-medium">Próxima</td>
+                                                                                <td className="px-4 py-2 font-mono">{diag.context.next.id}</td>
+                                                                                <td className="px-4 py-2">{diag.context.next.inicio}</td>
+                                                                                <td className="px-4 py-2 font-mono">{diag.context.next.encIni}</td>
+                                                                                <td className="px-4 py-2 font-mono">{diag.context.next.encFim}</td>
+                                                                                <td className="px-4 py-2">{diag.context.next.vol} L</td>
+                                                                                <td className="px-4 py-2 font-mono">{diag.context.next.pwr}</td>
+                                                                            </tr>
+                                                                        )}
+                                                                        </tbody>
+                                                                    </table>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* ======================================================= */}
+                            {/* TABELA DE EXPORTAÇÃO NORMAL (NÃO MOSTRA NO MODO WLN)    */}
+                            {/* ======================================================= */}
+                            {currentMode !== 'wln' && displayData.length > 0 && (
                                 <div className="mt-8 animate-fade-in-up">
                                     <div className="flex items-center justify-between mb-4 bg-green-50 p-4 rounded-xl border border-green-100">
                                         <div className="flex items-center gap-3">
