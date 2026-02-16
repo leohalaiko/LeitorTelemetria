@@ -14,7 +14,6 @@ function App() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const [processedData, setProcessedData] = useState<any[]>([]);
 
-    // VARIÁVEL DE CARREGAMENTO VOLTOU A SER USADA NA TELA PARA EVITAR ERRO DO LINTER
     const [isProcessing, setIsProcessing] = useState(false);
     const [startIdInput, setStartIdInput] = useState<string>("");
 
@@ -24,6 +23,10 @@ function App() {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [pumpName, setPumpName] = useState("");
     const [fileNameClient, setFileNameClient] = useState("");
+
+    // Novo estado de segurança
+    const [templateFile, setTemplateFile] = useState<File | null>(null);
+    const [needsManualMolde, setNeedsManualMolde] = useState(false);
 
     const handleRowEdit = (index: number, field: string, value: string | number) => {
         const newData = [...processedData];
@@ -35,6 +38,7 @@ function App() {
         if (processedData.length > 0) {
             setPumpName("");
             setFileNameClient("");
+            setNeedsManualMolde(false);
             setIsModalOpen(true);
         }
     };
@@ -46,9 +50,20 @@ function App() {
         }
 
         try {
-            const response = await fetch('/Molde_Vazio.xlsx');
-            if (!response.ok) throw new Error("Molde não encontrado.");
-            const arrayBuffer = await response.arrayBuffer();
+            let arrayBuffer: ArrayBuffer;
+
+            // SISTEMA HÍBRIDO: Usa o arquivo manual se anexado, senão tenta puxar do servidor
+            if (templateFile) {
+                arrayBuffer = await templateFile.arrayBuffer();
+            } else {
+                const response = await fetch('/Molde_Vazio.xlsx');
+                if (!response.ok) {
+                    setNeedsManualMolde(true);
+                    toast.warning("Molde automático não encontrado no servidor (Erro 404). Por favor, anexe o arquivo manualmente abaixo.");
+                    return; // Para a execução e espera o usuário anexar
+                }
+                arrayBuffer = await response.arrayBuffer();
+            }
 
             const workbook = new ExcelJS.Workbook();
             await workbook.xlsx.load(arrayBuffer);
@@ -67,7 +82,6 @@ function App() {
 
             ws.getCell('D2').value = medidorCorrente;
 
-            // TIPAGEM CORRIGIDA PARA ACEITAR NUMEROS E TEXTOS
             const formatTime = (timeStr: string | number | undefined | null) => {
                 if (!timeStr || timeStr === '-') return "";
                 const str = String(timeStr);
@@ -116,12 +130,13 @@ function App() {
             const buffer = await workbook.xlsx.writeBuffer();
             saveAs(new Blob([buffer]), nomeArquivo);
 
-            toast.success(`Planilha gerada com sucesso a partir do molde!`);
+            toast.success(`Planilha gerada com sucesso!`);
             setIsModalOpen(false);
 
         } catch (error) {
             console.error(error);
-            toast.error("Erro ao gerar. Certifique-se de que o 'Molde_Vazio.xlsx' está na pasta 'public'.");
+            setNeedsManualMolde(true);
+            toast.error("Falha de processamento. Anexe o molde manualmente.");
         }
     };
 
@@ -258,7 +273,6 @@ function App() {
                                 </>
                             )}
 
-                            {/* ESTA É A LINHA QUE CORRIGE O ERRO DE VARIÁVEL NUNCA USADA */}
                             {isProcessing && (
                                 <div className="mt-8 mb-4 p-4 text-center font-bold text-blue-600 bg-blue-50 rounded-xl animate-pulse">
                                     Processando dados, por favor aguarde...
@@ -272,7 +286,7 @@ function App() {
                                             <div className="p-2 bg-green-100 rounded-lg text-green-600"><FileSpreadsheet className="w-6 h-6" /></div>
                                             <div>
                                                 <p className="font-bold text-green-900">Pronto para Exportar!</p>
-                                                <p className="text-sm text-green-700">O Excel vai usar o Molde_Vazio automaticamente.</p>
+                                                <p className="text-sm text-green-700">Edite as informações necessárias antes de baixar.</p>
                                             </div>
                                         </div>
                                         <button onClick={handleDownloadClick} className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl font-bold flex items-center shadow-lg transition-all active:scale-95">
@@ -280,16 +294,19 @@ function App() {
                                         </button>
                                     </div>
 
-                                    <div className="overflow-x-auto border border-gray-200 rounded-xl shadow-sm max-h-[500px]">
+                                    {/* CORREÇÃO DO SCROLL: overflow-auto e max-h adicionados corretamente */}
+                                    <div className="overflow-auto border border-gray-200 rounded-xl shadow-sm max-h-[600px] w-full bg-white">
                                         <table className="w-full text-sm text-left relative">
                                             <thead className="bg-gray-100 text-gray-600 font-bold sticky top-0 z-10 shadow-sm">
                                             <tr>
                                                 <th className="px-4 py-3 whitespace-nowrap">Data</th>
-                                                <th className="px-4 py-3 whitespace-nowrap">ID Operação</th>
+                                                <th className="px-4 py-3 whitespace-nowrap">ID</th>
                                                 <th className="px-4 py-3 whitespace-nowrap text-blue-600 flex items-center gap-1"><Edit3 className="w-4 h-4"/> Placa</th>
-                                                <th className="px-4 py-3 whitespace-nowrap text-blue-600 flex items-center gap-1"><Edit3 className="w-4 h-4"/> Volume (L)</th>
+                                                <th className="px-4 py-3 whitespace-nowrap text-blue-600"><Edit3 className="w-4 h-4 inline mr-1"/> Vol (L)</th>
+                                                {/* Adicionado Encerrantes na tela */}
+                                                <th className="px-4 py-3 whitespace-nowrap text-gray-400">Enc. Ini</th>
+                                                <th className="px-4 py-3 whitespace-nowrap text-gray-400">Enc. Fim</th>
                                                 <th className="px-4 py-3 whitespace-nowrap">Frentista</th>
-                                                <th className="px-4 py-3 whitespace-nowrap">Odômetro</th>
                                             </tr>
                                             </thead>
                                             <tbody>
@@ -317,8 +334,9 @@ function App() {
                                                             onChange={(e) => handleRowEdit(i, 'Volume (L)', Number(e.target.value))}
                                                         />
                                                     </td>
+                                                    <td className="px-4 py-3 whitespace-nowrap text-gray-400">{row['Encerrante Inicial Bruto'] || row['Encerrante Inicial']}</td>
+                                                    <td className="px-4 py-3 whitespace-nowrap text-gray-400">{row['Encerrante Final Bruto'] || row['Encerrante Final']}</td>
                                                     <td className="px-4 py-3 whitespace-nowrap">{row['Frentista']}</td>
-                                                    <td className="px-4 py-3 whitespace-nowrap">{row['Odômetro']}</td>
                                                 </tr>
                                             ))}
                                             </tbody>
@@ -334,6 +352,22 @@ function App() {
                                             <h3 className="text-xl font-bold text-gray-800">Informações da Base</h3>
                                             <button onClick={() => setIsModalOpen(false)} className="p-1 hover:bg-gray-100 rounded-full text-gray-500"><X className="w-6 h-6" /></button>
                                         </div>
+
+                                        {/* CAIXA DE EMERGÊNCIA - Aparece só se der Erro 404 */}
+                                        {needsManualMolde && (
+                                            <div className="mb-4 bg-orange-50 p-4 rounded-xl border border-orange-300">
+                                                <label className="block text-sm font-bold text-orange-800 mb-2">
+                                                    ⚠️ Anexar Molde Manualmente
+                                                </label>
+                                                <input
+                                                    type="file"
+                                                    accept=".xlsx"
+                                                    className="w-full text-sm text-orange-800 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-orange-600 file:text-white hover:file:bg-orange-700 outline-none"
+                                                    onChange={(e) => setTemplateFile(e.target.files?.[0] || null)}
+                                                />
+                                                <p className="text-xs text-orange-700 mt-2">O arquivo 'Molde_Vazio.xlsx' não foi achado no servidor. Envie-o agora para gerar a planilha.</p>
+                                            </div>
+                                        )}
 
                                         <div className="mb-4">
                                             <label className="block text-sm font-semibold text-gray-700 mb-2">Nome da Bomba</label>
