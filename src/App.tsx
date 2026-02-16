@@ -47,7 +47,7 @@ function App() {
             setPumpName("");
             setFileNameClient("");
             setNeedsManualMolde(false);
-            setTemplateFile(null); // Limpa o molde anterior se abrir o modal de novo
+            setTemplateFile(null);
             setIsModalOpen(true);
         }
     };
@@ -64,7 +64,8 @@ function App() {
             if (templateFile) {
                 arrayBuffer = await templateFile.arrayBuffer();
             } else {
-                const response = await fetch('/Molde_Vazio.xlsx');
+                // Puxando o seu arquivo Molde_Vazio2.xlsx (ou Molde_Vazio.xlsx se você voltou o nome)
+                const response = await fetch(`/Molde_Vazio.xlsx?v=${Date.now()}`);
                 if (!response.ok) {
                     setNeedsManualMolde(true);
                     toast.warning("Molde automático não encontrado no servidor. Por favor, anexe o arquivo manualmente.");
@@ -108,10 +109,26 @@ function App() {
                 const r = index + 3;
                 const row = ws.getRow(r);
 
-                row.getCell(1).value = pumpName.trim();
+                // --- PINCEL DE FORMATAÇÃO AUTOMÁTICO ---
+                // Se a linha for maior que 3, clona o estilo da linha 3 (fontes, cores, vermelho da placa, etc)
+                if (r > 3) {
+                    const baseRow = ws.getRow(3);
+                    for (let col = 1; col <= 13; col++) { // São 13 colunas na nossa planilha
+                        row.getCell(col).style = baseRow.getCell(col).style;
+                    }
+                }
+
+                let medidorCol = 0;
+                if (currentMode === 'transcricao') {
+                    medidorCol = Number(item.medidorFinal);
+                } else {
+                    medidorCol = Number(item.raw['Encerrante Final Bruto'] || 0);
+                }
+
+                row.getCell(1).value = String(pumpName).trim();
                 row.getCell(2).value = formatTime(item.horaInicio);
                 row.getCell(3).value = formatTime(item.horaFim);
-                row.getCell(4).value = item.medidorFinal;
+                row.getCell(4).value = medidorCol;
 
                 row.getCell(6).value = Number(item.medidorInicial);
                 row.getCell(7).value = Number(item.medidorFinal);
@@ -134,7 +151,7 @@ function App() {
             const buffer = await workbook.xlsx.writeBuffer();
             saveAs(new Blob([buffer]), nomeArquivo);
 
-            toast.success(`Planilha gerada e pronta!`);
+            toast.success(`Planilha gerada com a formatação perfeita!`);
             setIsModalOpen(false);
 
         } catch (error) {
@@ -356,7 +373,6 @@ function App() {
                                             <button onClick={() => setIsModalOpen(false)} className="p-1 hover:bg-gray-100 rounded-full text-gray-500"><X className="w-6 h-6" /></button>
                                         </div>
 
-                                        {/* A MÁGICA DA UX ACONTECE AQUI */}
                                         {needsManualMolde && (
                                             <div className={`mb-4 p-4 rounded-xl border transition-colors duration-300 ${templateFile ? 'bg-green-50 border-green-300' : 'bg-orange-50 border-orange-300'}`}>
                                                 <label className={`block text-sm font-bold mb-2 ${templateFile ? 'text-green-800' : 'text-orange-800'}`}>
