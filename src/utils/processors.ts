@@ -33,7 +33,6 @@ const enrichWlnData = (data: WlnRecord[]) => {
         }
 
         if (row.upar0) {
-            // Salva a hora bruta original para o Relatório de Diagnóstico
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             (row as any)._originalUpar3 = row.upar3 ? Number(row.upar3) : 0;
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -120,12 +119,33 @@ const findClosestRecord = (records: TankRecord[], targetTs: number): TankRecord 
     return records.reduce((prev, curr) => (Math.abs(curr.timestamp - targetTs) < Math.abs(prev.timestamp - targetTs) ? curr : prev));
 };
 
+// ==========================================
+// 🚀 CONCILIAÇÃO ATUALIZADA (REGRA DOS IDs DO MANGOTE PURA)
+// ==========================================
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const reconciliateData = (wlnData: any[], tankData: TankRecord[]) => {
+export const reconciliateData = (wlnData: any[], tankData: TankRecord[], mode: string = 'transcricao') => {
     const processedIDs = new Set<string>();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const results: any[] = [];
-    const validRows = wlnData.filter(row => row.upar0 && Number(row.upar0) > 0);
+
+    // 1. Encontra o Maior ID do arquivo inteiro (A numeração da bomba principal)
+    const validUpar0s = wlnData.map(r => Number(r.upar0)).filter(id => !isNaN(id) && id > 0);
+    const maxUpar0 = validUpar0s.length > 0 ? Math.max(...validUpar0s) : 0;
+
+    // 2. Filtra as linhas dependendo do módulo selecionado
+    const validRows = wlnData.filter(row => {
+        const id = Number(row.upar0);
+        if (!id || isNaN(id)) return false;
+
+        // Se o maior ID da bomba for maior que 50, consideramos "Comboio" qualquer ID menor que a metade desse valor
+        const isSmallId = maxUpar0 > 50 ? (id < maxUpar0 * 0.5) : false;
+
+        if (mode === 'comboio') {
+            return isSmallId; // Pega APENAS os IDs minúsculos (Comboio)
+        } else {
+            return !isSmallId; // Pega APENAS os IDs normais (Bico Normal - Transcrição)
+        }
+    });
 
     validRows.forEach(row => {
         const idOperacao = String(row.upar0);
@@ -135,6 +155,7 @@ export const reconciliateData = (wlnData: any[], tankData: TankRecord[]) => {
         const startTs = String(row.upar3).length > 11 ? Number(row.upar3) : Number(row.upar3) * 1000;
         const endTs = String(row.upar5).length > 11 ? Number(row.upar5) : Number(row.upar5) * 1000;
 
+        // Cruzamento temporal direto com o Tanque usando a própria hora da trama
         const tankStart = findClosestRecord(tankData, startTs);
         const tankEnd = findClosestRecord(tankData, endTs);
 
@@ -156,7 +177,7 @@ export const reconciliateData = (wlnData: any[], tankData: TankRecord[]) => {
             'Encerrante Inicial Bruto': Number(row.upar4) || 0,
             'Encerrante Final Bruto': Number(row.upar6) || 0,
             'Odômetro': row.upar10 || '-',
-            'Tipo': 'Conciliado'
+            'Tipo': mode === 'comboio' ? 'Comboio (Mangote)' : 'Conciliado'
         });
     });
 
@@ -299,7 +320,7 @@ export const formatForExcel = (data: any[], mode: string) => {
         let medidorInicialDaLinha = 0;
         let medidorFinalDaLinha = 0;
 
-        if (mode === 'transcricao') {
+        if (mode === 'transcricao' || mode === 'comboio') {
             medidorInicialDaLinha = medidorCorrente;
             medidorCorrente += Math.round((item['Volume (L)'] || 0) * 100);
             medidorFinalDaLinha = medidorCorrente;
@@ -326,18 +347,17 @@ export const formatForExcel = (data: any[], mode: string) => {
         };
     });
 
-    if (mode === 'transcricao') {
+    if (mode === 'transcricao' || mode === 'comboio') {
         return mappedData.sort((a, b) => (Number(b.originalTimestamp) || 0) - (Number(a.originalTimestamp) || 0));
     }
     return mappedData;
 };
 
 // ==========================================
-// 🚀 MOTOR DE DIAGNÓSTICO (ATUALIZADO COM RAIO-X) 🚀
+// 🚀 MOTOR DE DIAGNÓSTICO
 // ==========================================
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const runDiagnostics = (rawData: any[]) => {
-    // 1. FILTRO ANTI-ECO (Deduplicação de sujeira da rede)
     const supplies = rawData.filter(row => row.upar0 && Number(row.upar0) > 0);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const uniqueSupplies: any[] = [];
@@ -348,7 +368,6 @@ export const runDiagnostics = (rawData: any[]) => {
         const encIni = Number(row.upar4) || 0;
         const origUpar3 = row._originalUpar3 !== undefined ? row._originalUpar3 : Number(row.upar3);
 
-        // Assinatura única para ignorar quando a placa repete a mesma informação
         const signature = `${currentId}-${origUpar3}-${encIni}`;
         if (!processedSignatures.has(signature)) {
             processedSignatures.add(signature);
@@ -362,7 +381,6 @@ export const runDiagnostics = (rawData: any[]) => {
     let lastTime: number | null = null;
     let lastEncIni: number | null = null;
 
-    // Função Ajudante para extrair os dados formatados para a Tabela de Raio-X
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const formatContextRow = (row: any) => {
         if (!row) return null;
@@ -382,7 +400,6 @@ export const runDiagnostics = (rawData: any[]) => {
         };
     };
 
-    // 2. AUDITORIA PROFUNDA NAS LINHAS ÚNICAS
     uniqueSupplies.forEach((row, index, array) => {
         const errors: string[] = [];
         const warnings: string[] = [];
@@ -393,7 +410,6 @@ export const runDiagnostics = (rawData: any[]) => {
         const origUpar3 = row._originalUpar3 !== undefined ? row._originalUpar3 : Number(row.upar3);
         const origUpar5 = row._originalUpar5 !== undefined ? row._originalUpar5 : Number(row.upar5);
 
-        // A. Validação de ID Travado
         if (lastId === currentId) {
             if (lastTime !== origUpar3 || lastEncIni !== encIni) {
                 errors.push(`ID Travado (A placa não incrementou o ID. Gerou o mesmo ID ${currentId} para um novo abastecimento)`);
@@ -403,14 +419,12 @@ export const runDiagnostics = (rawData: any[]) => {
         lastTime = origUpar3;
         lastEncIni = encIni;
 
-        // B. Validação de Encerrantes
         if (encIni === 0) errors.push("Encerrante Inicial Zerado (upar4 = 0)");
         if (encFim === 0) errors.push("Encerrante Final Zerado (upar6 = 0)");
         if (encIni > 0 && encFim > 0 && encIni === encFim) {
             errors.push("Encerrante Travado (Inicial é igual ao Final, o fluxômetro não registrou volume)");
         }
 
-        // C. Hora Zerada
         if (!origUpar3 || origUpar3 === 0) {
             errors.push("Hora Inicial Zerada (O upar3 chegou corrompido/zerado da telemetria)");
         }
@@ -418,7 +432,6 @@ export const runDiagnostics = (rawData: any[]) => {
             errors.push("Hora Final Zerada (O upar5 chegou corrompido/zerado da telemetria)");
         }
 
-        // D. Oscilação e Queda de Energia (Lógica do Galileosky)
         const pwrExt = row.pwr_ext !== undefined ? Number(row.pwr_ext) : null;
         const pwrInt = row.pwr_int !== undefined ? Number(row.pwr_int) : null;
 
@@ -439,7 +452,6 @@ export const runDiagnostics = (rawData: any[]) => {
         let vol = calculateVolume(encFim, encIni);
         if (vol < 0) vol = 0;
 
-        // Captura o Contexto (Linha Anterior e Linha Posterior da Matriz Limpa)
         const prevRow = index > 0 ? array[index - 1] : null;
         const nextRow = index < array.length - 1 ? array[index + 1] : null;
 
@@ -453,7 +465,6 @@ export const runDiagnostics = (rawData: any[]) => {
             warnings,
             isOk: errors.length === 0 && warnings.length === 0,
             hasWarningOnly: errors.length === 0 && warnings.length > 0,
-            // Adicionado o pacote de Contexto para a UI!
             context: {
                 prev: formatContextRow(prevRow),
                 current: formatContextRow(row),

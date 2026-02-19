@@ -1,5 +1,5 @@
 import React from 'react';
-import { Fuel, Lock, FileCode, ClipboardEdit } from 'lucide-react'; // Removi o AlertTriangle que era do card cinza
+import { Fuel, Lock, FileCode, ClipboardEdit, Truck } from 'lucide-react'; // Adicionado o Truck
 
 interface ModeSelectorProps {
     onSelectMode: (mode: string) => void;
@@ -17,12 +17,21 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({ onSelectMode }) => {
             disabled: false
         },
         {
-            id: 'transcricao', // Mantemos a mesma ID interna para não quebrar a lógica do App.tsx!
-            title: 'Sem Encerrante (Sonda / Transcrição)',
-            desc: 'Cruza telemetria (WLN) com nível de tanque (CSV) para calcular litragem e gerar encerrantes.',
+            id: 'transcricao',
+            title: 'Sem Encerrante (Sonda)',
+            desc: 'Cruza telemetria (WLN) com nível de tanque (CSV) para calcular litragem.',
             icon: <ClipboardEdit className="w-8 h-8 text-orange-500" />,
             color: 'hover:border-orange-500 hover:bg-orange-50',
             bgIcon: 'bg-orange-50',
+            disabled: false
+        },
+        {
+            id: 'comboio', // NOVO MÓDULO AQUI!
+            title: 'Carregamento Comboio',
+            desc: 'Cruza telemetria e tanque, filtrando apenas os eventos de Mangote (I/O=11/6).',
+            icon: <Truck className="w-8 h-8 text-teal-500" />,
+            color: 'hover:border-teal-500 hover:bg-teal-50',
+            bgIcon: 'bg-teal-50',
             disabled: false
         },
         {
@@ -46,7 +55,7 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({ onSelectMode }) => {
     ];
 
     return (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto mt-8 animate-fade-in-up">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-5xl mx-auto mt-8 animate-fade-in-up">
             {modes.map((mode) => (
                 <button
                     key={mode.id}

@@ -3,7 +3,8 @@ import Papa from 'papaparse';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 import { toast, Toaster } from 'sonner';
-import { ArrowLeft, Download, FileSpreadsheet, Settings, X, Fuel, Edit3, CheckCircle, AlertOctagon } from 'lucide-react';
+// ✅ ADICIONADO: Ícone Trash2 (Lixeira) para o botão de excluir
+import { ArrowLeft, Download, FileSpreadsheet, Settings, X, Fuel, Edit3, CheckCircle, AlertOctagon, Trash2 } from 'lucide-react';
 
 import { processLogFile, processWlnFile, formatForExcel, parseTankFile, reconciliateData, runDiagnostics } from './utils/processors';
 import { ModeSelector } from './components/ModeSelector';
@@ -43,6 +44,12 @@ function App() {
             }
             return item;
         }));
+    };
+
+    // 🚀 NOVA FUNÇÃO: Excluir linha e recalcular a cascata matematicamente
+    const handleDeleteRow = (uid: string) => {
+        setProcessedData(prev => prev.filter(item => item._uid !== uid));
+        toast.success("Abastecimento removido! Encerrantes recalculados.");
     };
 
     const handleDownloadClick = () => {
@@ -93,7 +100,7 @@ function App() {
             ws.name = `${dia}.${mes}.${ano}`;
 
             let medidorSetup = 0;
-            if (currentMode === 'transcricao') {
+            if (currentMode === 'transcricao' || currentMode === 'comboio') {
                 medidorSetup = 0;
             } else {
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -141,7 +148,7 @@ function App() {
                 }
 
                 let medidorCol = 0;
-                if (currentMode === 'transcricao') {
+                if (currentMode === 'transcricao' || currentMode === 'comboio') {
                     medidorCol = Number(item.medidorFinal);
                 } else {
                     medidorCol = Number(item.raw['Encerrante Final Bruto'] || 0);
@@ -204,7 +211,7 @@ function App() {
 
             if (tankRaw.length === 0) throw new Error("Não foi possível ler dados do arquivo de tanque.");
 
-            const mergedData = reconciliateData(wlnRaw, tankRaw);
+            const mergedData = reconciliateData(wlnRaw, tankRaw, currentMode!);
             setProcessedData(mergedData);
             if (mergedData.length > 0) toast.success(`Conciliação concluída! Edite as placas se necessário.`);
             else toast.warning("Nenhum abastecimento encontrado no cruzamento.");
@@ -217,7 +224,7 @@ function App() {
     };
 
     const handleFileSelect = async (file: File) => {
-        if (currentMode === 'transcricao') {
+        if (currentMode === 'transcricao' || currentMode === 'comboio') {
             const name = file.name.toLowerCase();
             if (name.endsWith('.wln') || name.endsWith('.txt')) {
                 setWlnFile(file);
@@ -300,10 +307,10 @@ function App() {
 
                         <div className="bg-white rounded-3xl shadow-xl p-8 border border-gray-100 relative">
 
-                            {currentMode === 'transcricao' ? (
+                            {currentMode === 'transcricao' || currentMode === 'comboio' ? (
                                 <div className="space-y-6">
-                                    <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl text-orange-800 text-sm mb-6">
-                                        <strong>Conciliação Automática:</strong> Envie o arquivo da Placa (WLN) e o do Nível (CSV) para cruzar os horários.
+                                    <div className={`p-4 ${currentMode === 'comboio' ? 'bg-teal-50 border-teal-200 text-teal-800' : 'bg-orange-50 border-orange-200 text-orange-800'} border rounded-xl text-sm mb-6`}>
+                                        <strong>{currentMode === 'comboio' ? 'Carregamento de Comboio:' : 'Conciliação Automática:'}</strong> {currentMode === 'comboio' ? 'Filtra e cruza APENAS os abastecimentos do Mangote.' : 'Envie o arquivo da Placa (WLN) e o do Nível (CSV) para cruzar os horários.'}
                                     </div>
 
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -341,9 +348,7 @@ function App() {
                                 </div>
                             )}
 
-                            {/* ======================================================= */}
-                            {/* 🚀 PAINEL DE DIAGNÓSTICO (COM RAIO-X DE TELEMETRIA) 🚀 */}
-                            {/* ======================================================= */}
+                            {/* PAINEL DE DIAGNÓSTICO (MODO WLN) */}
                             {currentMode === 'wln' && diagnosticData.length > 0 && (
                                 <div className="mt-8 animate-fade-in-up">
                                     <div className="mb-6">
@@ -386,7 +391,6 @@ function App() {
                                                         </div>
                                                     </div>
 
-                                                    {/* O NOVO BLOCO QUE EXIBE A AUDITORIA TÉCNICA SE HOUVER UM ERRO OU AVISO */}
                                                     {!diag.isOk && (
                                                         <div className="mt-5 pt-4 border-t border-gray-100 space-y-4">
                                                             <div className="space-y-2">
@@ -402,7 +406,6 @@ function App() {
                                                                 ))}
                                                             </div>
 
-                                                            {/* 🔍 TABELA RAIO-X DE TELEMETRIA 🔍 */}
                                                             <div className="border border-gray-200 rounded-xl overflow-hidden mt-4 shadow-sm">
                                                                 <div className="bg-slate-100 px-4 py-2 text-xs font-bold text-slate-600 border-b border-gray-200 flex flex-col md:flex-row md:items-center justify-between gap-1">
                                                                     <span>🔍 Raio-X da Telemetria (Contexto)</span>
@@ -422,7 +425,6 @@ function App() {
                                                                         </tr>
                                                                         </thead>
                                                                         <tbody>
-                                                                        {/* LINHA ANTERIOR */}
                                                                         {diag.context.prev && (
                                                                             <tr className="border-b border-gray-100 text-slate-500 text-xs hover:bg-slate-50">
                                                                                 <td className="px-4 py-2 font-medium">Anterior</td>
@@ -435,7 +437,6 @@ function App() {
                                                                             </tr>
                                                                         )}
 
-                                                                        {/* LINHA ATUAL (COM DEFEITO) */}
                                                                         <tr className={`border-b border-gray-100 text-xs font-medium ${diag.errors.length > 0 ? 'bg-red-50 text-red-900' : 'bg-yellow-50 text-yellow-900'}`}>
                                                                             <td className="px-4 py-2 font-bold flex items-center gap-1">👉 Atual</td>
                                                                             <td className="px-4 py-2 font-mono font-bold">{diag.context.current.id}</td>
@@ -446,7 +447,6 @@ function App() {
                                                                             <td className="px-4 py-2 font-bold font-mono">{diag.context.current.pwr}</td>
                                                                         </tr>
 
-                                                                        {/* LINHA PRÓXIMA */}
                                                                         {diag.context.next && (
                                                                             <tr className="text-slate-500 text-xs hover:bg-slate-50">
                                                                                 <td className="px-4 py-2 font-medium">Próxima</td>
@@ -472,7 +472,7 @@ function App() {
                             )}
 
                             {/* ======================================================= */}
-                            {/* TABELA DE EXPORTAÇÃO NORMAL (NÃO MOSTRA NO MODO WLN)    */}
+                            {/* TABELA DE EXPORTAÇÃO NORMAL COM BOTÃO DE EXCLUIR       */}
                             {/* ======================================================= */}
                             {currentMode !== 'wln' && displayData.length > 0 && (
                                 <div className="mt-8 animate-fade-in-up">
@@ -502,6 +502,8 @@ function App() {
                                                 <th className="px-4 py-3 whitespace-nowrap text-gray-400">Enc. Inicial</th>
                                                 <th className="px-4 py-3 whitespace-nowrap text-gray-400">Enc. Final</th>
                                                 <th className="px-4 py-3 whitespace-nowrap">Frentista</th>
+                                                {/* NOVA COLUNA AQUI */}
+                                                <th className="px-4 py-3 whitespace-nowrap text-center">Ações</th>
                                             </tr>
                                             </thead>
                                             <tbody>
@@ -531,6 +533,16 @@ function App() {
                                                     <td className="px-4 py-3 whitespace-nowrap text-gray-500 font-mono">{row.medidorInicial}</td>
                                                     <td className="px-4 py-3 whitespace-nowrap text-gray-500 font-mono">{row.medidorFinal}</td>
                                                     <td className="px-4 py-3 whitespace-nowrap">{row.frentista}</td>
+                                                    {/* BOTÃO DE EXCLUIR AQUI */}
+                                                    <td className="px-4 py-3 whitespace-nowrap text-center">
+                                                        <button
+                                                            onClick={() => handleDeleteRow(row._uid)}
+                                                            className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                                            title="Remover linha e recalcular"
+                                                        >
+                                                            <Trash2 className="w-5 h-5" />
+                                                        </button>
+                                                    </td>
                                                 </tr>
                                             ))}
                                             </tbody>
