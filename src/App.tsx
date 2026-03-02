@@ -3,8 +3,8 @@ import Papa from 'papaparse';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 import { toast, Toaster } from 'sonner';
-// ✅ ADICIONADO: Ícone Trash2 (Lixeira) para o botão de excluir
-import { ArrowLeft, Download, FileSpreadsheet, Settings, X, Fuel, Edit3, CheckCircle, AlertOctagon, Trash2 } from 'lucide-react';
+// 🚀 ADICIONADO: Ícone Calculator para o novo painel de resumo
+import { ArrowLeft, Download, FileSpreadsheet, Settings, X, Fuel, Edit3, CheckCircle, AlertOctagon, Trash2, ZapOff, Calculator } from 'lucide-react';
 
 import { processLogFile, processWlnFile, formatForExcel, parseTankFile, reconciliateData, runDiagnostics } from './utils/processors';
 import { ModeSelector } from './components/ModeSelector';
@@ -33,6 +33,25 @@ function App() {
 
     const displayData = formatForExcel(processedData, currentMode || 'normal');
 
+    // =========================================================================
+    // 🚀 NOVO: CÁLCULO DE AUDITORIA (Soma de Volume vs Diferença de Encerrante)
+    // =========================================================================
+    const totalVolume = displayData.reduce((acc, row) => acc + (Number(row.volumeConciliado) || 0), 0);
+
+    let totalEncerrante = 0;
+    if (displayData.length > 0) {
+        const firstEnc = Number(displayData[0].medidorInicial) || 0;
+        const lastEnc = Number(displayData[displayData.length - 1].medidorFinal) || 0;
+        // Sonda e Comboio usam a casa centesimal, os outros usam decimal nativa
+        const multiplier = (currentMode === 'transcricao' || currentMode === 'comboio') ? 0.01 : 0.1;
+        totalEncerrante = Math.max(0, (lastEnc - firstEnc) * multiplier);
+    }
+
+    const diferencaLitros = Math.abs(totalEncerrante - totalVolume);
+    // Dá uma margem de segurança de 0.5L por conta de arredondamento das casas decimais
+    const hasDivergence = diferencaLitros > 0.5;
+    // =========================================================================
+
     const handleRowEdit = (uid: string, fieldName: string, value: string | number) => {
         setProcessedData(prev => prev.map(item => {
             if (item._uid === uid) {
@@ -46,7 +65,6 @@ function App() {
         }));
     };
 
-    // 🚀 NOVA FUNÇÃO: Excluir linha e recalcular a cascata matematicamente
     const handleDeleteRow = (uid: string) => {
         setProcessedData(prev => prev.filter(item => item._uid !== uid));
         toast.success("Abastecimento removido! Encerrantes recalculados.");
@@ -333,11 +351,21 @@ function App() {
                                 </div>
                             ) : (
                                 <>
+                                    {currentMode === 'energia' && (
+                                        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl text-red-800 text-sm flex items-center gap-3">
+                                            <ZapOff className="w-6 h-6 flex-shrink-0" />
+                                            <span>
+                                                <strong>Recuperação de Queda de Energia:</strong> Envie o arquivo WLN. O sistema vai rastrear o relógio eletrônico da bomba (<code>can_r23</code>) para restaurar os litros perdidos garantindo a Malha Fechada do tanque.
+                                            </span>
+                                        </div>
+                                    )}
+
                                     {currentMode === 'travado' && (
                                         <div className="mb-8 p-6 bg-purple-50 rounded-2xl border border-purple-100 flex flex-col md:flex-row items-center gap-4">
                                             <div className="w-full md:w-48"><label className="text-xs font-bold text-purple-800 uppercase ml-1">Último ID Válido</label><input type="number" className="w-full mt-1 px-4 py-3 rounded-xl border border-purple-200 outline-none" value={startIdInput} onChange={(e) => setStartIdInput(e.target.value)} /></div>
                                         </div>
                                     )}
+
                                     <FileUpload onFileSelect={handleFileSelect} />
                                 </>
                             )}
@@ -471,11 +499,43 @@ function App() {
                                 </div>
                             )}
 
-                            {/* ======================================================= */}
-                            {/* TABELA DE EXPORTAÇÃO NORMAL COM BOTÃO DE EXCLUIR       */}
-                            {/* ======================================================= */}
+                            {/* TABELA DE EXPORTAÇÃO E CÁLCULO DE AUDITORIA */}
                             {currentMode !== 'wln' && displayData.length > 0 && (
                                 <div className="mt-8 animate-fade-in-up">
+
+                                    {/* 🚀 NOVO: PAINEL DE AUDITORIA (CÁLCULO DE LITROS) 🚀 */}
+                                    <div className="mb-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex items-center justify-between">
+                                            <div>
+                                                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Soma dos Volumes</p>
+                                                <p className="text-2xl font-black text-gray-800">{totalVolume.toFixed(1)} L</p>
+                                            </div>
+                                            <div className="p-3 bg-blue-50 text-blue-600 rounded-xl"><Fuel className="w-7 h-7"/></div>
+                                        </div>
+
+                                        <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex items-center justify-between">
+                                            <div>
+                                                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1" title="Diferença entre o primeiro Encerrante Inicial e o último Encerrante Final da lista.">Saída pelo Medidor</p>
+                                                <p className="text-2xl font-black text-gray-800">{totalEncerrante.toFixed(1)} L</p>
+                                            </div>
+                                            <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl"><Calculator className="w-7 h-7"/></div>
+                                        </div>
+
+                                        <div className={`p-5 rounded-2xl border shadow-sm flex items-center justify-between transition-colors ${hasDivergence ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
+                                            <div>
+                                                <p className={`text-xs font-bold uppercase tracking-wider mb-1 ${hasDivergence ? 'text-red-500' : 'text-green-600'}`}>
+                                                    {hasDivergence ? 'Divergência Detectada' : 'Matemática Fechada'}
+                                                </p>
+                                                <p className={`text-2xl font-black ${hasDivergence ? 'text-red-700' : 'text-green-700'}`}>
+                                                    {hasDivergence ? `${diferencaLitros.toFixed(1)} L de diferença` : '0.0 L'}
+                                                </p>
+                                            </div>
+                                            <div className={`p-3 rounded-xl ${hasDivergence ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
+                                                {hasDivergence ? <AlertOctagon className="w-7 h-7"/> : <CheckCircle className="w-7 h-7"/>}
+                                            </div>
+                                        </div>
+                                    </div>
+
                                     <div className="flex items-center justify-between mb-4 bg-green-50 p-4 rounded-xl border border-green-100">
                                         <div className="flex items-center gap-3">
                                             <div className="p-2 bg-green-100 rounded-lg text-green-600"><FileSpreadsheet className="w-6 h-6" /></div>
@@ -502,7 +562,6 @@ function App() {
                                                 <th className="px-4 py-3 whitespace-nowrap text-gray-400">Enc. Inicial</th>
                                                 <th className="px-4 py-3 whitespace-nowrap text-gray-400">Enc. Final</th>
                                                 <th className="px-4 py-3 whitespace-nowrap">Frentista</th>
-                                                {/* NOVA COLUNA AQUI */}
                                                 <th className="px-4 py-3 whitespace-nowrap text-center">Ações</th>
                                             </tr>
                                             </thead>
@@ -533,7 +592,6 @@ function App() {
                                                     <td className="px-4 py-3 whitespace-nowrap text-gray-500 font-mono">{row.medidorInicial}</td>
                                                     <td className="px-4 py-3 whitespace-nowrap text-gray-500 font-mono">{row.medidorFinal}</td>
                                                     <td className="px-4 py-3 whitespace-nowrap">{row.frentista}</td>
-                                                    {/* BOTÃO DE EXCLUIR AQUI */}
                                                     <td className="px-4 py-3 whitespace-nowrap text-center">
                                                         <button
                                                             onClick={() => handleDeleteRow(row._uid)}

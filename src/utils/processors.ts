@@ -119,31 +119,25 @@ const findClosestRecord = (records: TankRecord[], targetTs: number): TankRecord 
     return records.reduce((prev, curr) => (Math.abs(curr.timestamp - targetTs) < Math.abs(prev.timestamp - targetTs) ? curr : prev));
 };
 
-// ==========================================
-// 🚀 CONCILIAÇÃO ATUALIZADA (REGRA DOS IDs DO MANGOTE PURA)
-// ==========================================
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const reconciliateData = (wlnData: any[], tankData: TankRecord[], mode: string = 'transcricao') => {
     const processedIDs = new Set<string>();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const results: any[] = [];
 
-    // 1. Encontra o Maior ID do arquivo inteiro (A numeração da bomba principal)
     const validUpar0s = wlnData.map(r => Number(r.upar0)).filter(id => !isNaN(id) && id > 0);
     const maxUpar0 = validUpar0s.length > 0 ? Math.max(...validUpar0s) : 0;
 
-    // 2. Filtra as linhas dependendo do módulo selecionado
     const validRows = wlnData.filter(row => {
         const id = Number(row.upar0);
         if (!id || isNaN(id)) return false;
 
-        // Se o maior ID da bomba for maior que 50, consideramos "Comboio" qualquer ID menor que a metade desse valor
         const isSmallId = maxUpar0 > 50 ? (id < maxUpar0 * 0.5) : false;
 
         if (mode === 'comboio') {
-            return isSmallId; // Pega APENAS os IDs minúsculos (Comboio)
+            return isSmallId;
         } else {
-            return !isSmallId; // Pega APENAS os IDs normais (Bico Normal - Transcrição)
+            return !isSmallId;
         }
     });
 
@@ -155,7 +149,6 @@ export const reconciliateData = (wlnData: any[], tankData: TankRecord[], mode: s
         const startTs = String(row.upar3).length > 11 ? Number(row.upar3) : Number(row.upar3) * 1000;
         const endTs = String(row.upar5).length > 11 ? Number(row.upar5) : Number(row.upar5) * 1000;
 
-        // Cruzamento temporal direto com o Tanque usando a própria hora da trama
         const tankStart = findClosestRecord(tankData, startTs);
         const tankEnd = findClosestRecord(tankData, endTs);
 
@@ -190,8 +183,148 @@ export const processLogFile = (data: any[], mode: string, extraParams: Record<st
         case 'normal': return processNormalSupply(data);
         case 'travado': return processLockedID(data, extraParams.startId || 0);
         case 'transcricao': return processManualTranscript(data);
+        case 'energia': return processPowerOutage(data);
         default: return data;
     }
+};
+
+// ==========================================
+// 🚀 MOTOR DE ENERGIA: A REGRA DO DIA FECHADO (100% VOLUME) + FILTRO DE ECO SIMPLIFICADO
+// ==========================================
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const processPowerOutage = (data: any[]) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result: any[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const uniqueSupplies: any[] = [];
+    const processedSignatures = new Set<string>();
+
+    // --- A BUSCA PELO INÍCIO E FIM ABSOLUTOS DO ARQUIVO ---
+    let absoluteFirstCan = 0;
+    for (let i = 0; i < data.length; i++) {
+        const can = Number(data[i].can_r23);
+        if (can > 0) { absoluteFirstCan = can; break; }
+    }
+
+    let absoluteLastCan = 0;
+    for (let i = data.length - 1; i >= 0; i--) {
+        const can = Number(data[i].can_r23);
+        if (can > 0) { absoluteLastCan = can; break; }
+    }
+
+    // Passo 1: Filtrar Ecos usando a Lógica Limpa do Usuário (ID + Hora Inicial ou Final)
+    data.forEach((row, index) => {
+        if (row.upar0 && Number(row.upar0) > 0) {
+            const id = Number(row.upar0);
+            const origUpar3 = row._originalUpar3 !== undefined ? row._originalUpar3 : Number(row.upar3);
+            const origUpar5 = row._originalUpar5 !== undefined ? row._originalUpar5 : Number(row.upar5);
+
+            // Cria uma assinatura imutável do abastecimento.
+            // Se o upar3 estiver zerado, ele pega o upar5 como âncora.
+            const timeAnchor = origUpar3 > 0 ? origUpar3 : origUpar5;
+            const signature = `${id}-${timeAnchor}`;
+
+            if (!processedSignatures.has(signature)) {
+                processedSignatures.add(signature);
+                uniqueSupplies.push({ row, index });
+            }
+        }
+    });
+
+    if (uniqueSupplies.length === 0) return [];
+
+    // Passo 2: Rastrear a âncora (can_r23 Inicial) de CADA abastecimento válido
+    const trueInitials = uniqueSupplies.map((item, k) => {
+        // O primeiro abastecimento SEMPRE usa a abertura oficial do dia da bomba
+        if (k === 0 && absoluteFirstCan > 0) return absoluteFirstCan;
+
+        let ini = 0;
+        let anchorIndex = -1;
+
+        // Limite de busca: só olha até o abastecimento anterior para não roubar cartão de outro carro
+        const limitIndex = k > 0 ? uniqueSupplies[k-1].index : 0;
+
+        for (let i = item.index; i > limitIndex; i--) {
+            const card = String(data[i].trailer_id_code);
+            if (card && card !== 'undefined' && card !== '0') {
+                anchorIndex = i;
+                break;
+            }
+        }
+
+        if (anchorIndex !== -1) {
+            for (let j = anchorIndex; j >= limitIndex; j--) {
+                const can = Number(data[j].can_r23);
+                if (can > 0) { ini = can; break; }
+            }
+        }
+
+        // Fallback: Acha pela Hora Bruta Inicial
+        if (ini === 0) {
+            const startTs = String(item.row.upar3).length > 11 ? Number(item.row.upar3) : Number(item.row.upar3) * 1000;
+            for (let i = item.index; i >= limitIndex; i--) {
+                const can = Number(data[i].can_r23);
+                if (can > 0 && data[i].timestamp <= startTs) { ini = can; break; }
+            }
+            if (ini === 0) {
+                for (let i = limitIndex; i <= item.index; i++) {
+                    const can = Number(data[i].can_r23);
+                    if (can > 0) { ini = can; break; }
+                }
+            }
+        }
+        return ini;
+    });
+
+    // Passo 3: Costurar a Matemática 100% Fechada (Fim[K] = Início[K+1])
+    for (let k = 0; k < uniqueSupplies.length; k++) {
+        const { row } = uniqueSupplies[k];
+
+        let encIniFixed = trueInitials[k];
+        let encFimFixed = 0;
+
+        if (k < uniqueSupplies.length - 1) {
+            // O final deste abastecimento é milimetricamente o início do próximo
+            encFimFixed = trueInitials[k + 1];
+        } else {
+            // O último abastecimento SEMPRE usa o fechamento oficial do dia da bomba
+            encFimFixed = absoluteLastCan > 0 ? absoluteLastCan : encIniFixed;
+        }
+
+        // Blindagem contra tramas no tempo futuro: Nunca deixa o final ficar menor que o inicial
+        if (encFimFixed < encIniFixed) {
+            encFimFixed = encIniFixed;
+        }
+
+        let vol = calculateVolume(encFimFixed, encIniFixed);
+        if (vol < 0) vol = 0;
+
+        const rawTs = Number(row.upar3) || 0;
+        const timeMs = String(rawTs).length > 11 ? rawTs : rawTs * 1000;
+
+        // Tags visuais elegantes
+        let tipoTexto = 'Corrente Contínua';
+        if (k === 0) tipoTexto += ' (Início do Dia)';
+        if (k === uniqueSupplies.length - 1) tipoTexto += ' (Fim do Dia)';
+        if (k === 0 && uniqueSupplies.length === 1) tipoTexto = 'Início e Fim do Dia';
+
+        result.push({
+            _uid: generateUID(),
+            'originalTimestamp': timeMs,
+            'Data': formatUnixDate(row.upar3),
+            'Data Final': formatUnixDate(row.upar5),
+            'ID Operação': row.upar0,
+            'Veículo (Cartão)': row.upar1,
+            'Frentista': row.upar2,
+            'Volume (L)': vol,
+            'Encerrante Inicial Bruto': encIniFixed,
+            'Encerrante Final Bruto': encFimFixed,
+            'Odômetro': row.upar10 || '-',
+            'Tipo': tipoTexto
+        });
+    }
+
+    return result.sort((a, b) => a.originalTimestamp - b.originalTimestamp);
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

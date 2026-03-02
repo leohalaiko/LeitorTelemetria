@@ -1,5 +1,5 @@
 import React from 'react';
-import { Fuel, Lock, FileCode, ClipboardEdit, Truck } from 'lucide-react'; // Adicionado o Truck
+import { Fuel, Lock, FileCode, ClipboardEdit, Truck, ZapOff } from 'lucide-react';
 
 interface ModeSelectorProps {
     onSelectMode: (mode: string) => void;
@@ -26,12 +26,21 @@ export const ModeSelector: React.FC<ModeSelectorProps> = ({ onSelectMode }) => {
             disabled: false
         },
         {
-            id: 'comboio', // NOVO MÓDULO AQUI!
+            id: 'comboio',
             title: 'Carregamento Comboio',
-            desc: 'Cruza telemetria e tanque, filtrando apenas os eventos de Mangote (I/O=11/6).',
+            desc: 'Filtra e cruza apenas os eventos do Mangote.',
             icon: <Truck className="w-8 h-8 text-teal-500" />,
             color: 'hover:border-teal-500 hover:bg-teal-50',
             bgIcon: 'bg-teal-50',
+            disabled: false
+        },
+        {
+            id: 'energia', // NOVO MÓDULO AQUI!
+            title: 'Queda de Energia',
+            desc: 'Restaura encerrantes zerados buscando o backup eletrônico (can_r23).',
+            icon: <ZapOff className="w-8 h-8 text-red-500" />,
+            color: 'hover:border-red-500 hover:bg-red-50',
+            bgIcon: 'bg-red-50',
             disabled: false
         },
         {
