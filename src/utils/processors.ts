@@ -280,7 +280,7 @@ const processPowerOutage = (data: any[]) => {
     for (let k = 0; k < uniqueSupplies.length; k++) {
         const { row } = uniqueSupplies[k];
 
-        let encIniFixed = trueInitials[k];
+        const encIniFixed = trueInitials[k];
         let encFimFixed = 0;
 
         if (k < uniqueSupplies.length - 1) {
