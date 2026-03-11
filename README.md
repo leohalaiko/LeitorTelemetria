@@ -14,7 +14,7 @@ Um sistema corporativo *Serverless* desenvolvido para auditar, conciliar e recup
 
 Em operações de abastecimento de grande escala, falhas de hardware (como quedas de energia) e "travamentos" de ID na placa de telemetria prejudicam os registros de dados de litragem, o que afeta diretamente o faturamento. O método tradicional de recuperação exigia o cruzamento manual de milhares de linhas de log (arquivos `.wln` e `.csv`), um processo lento e sujeito a erro humano.
 
-Este sistema **automatiza 100% da auditoria matemática**, restaurando abastecimentos perdidos, filtrando ruídos de rede (ecos), sincronizando dados de veículos diretamente do banco de dados (ATS) e gerando planilhas prontas para importação financeira.
+Este sistema **automatiza 100% da auditoria matemática**, restaurando abastecimentos perdidos, filtrando ruídos de rede (ecos), sincronizando dados de veículos diretamente do banco de dados (ATS) e gerando planilhas prontas para importação.
 
 ---
 
