@@ -27,16 +27,6 @@ const getPumpIoState = (row: any) => String(row?.['i/o'] || row?.io || '').trim(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const isPumpOnRow = (row: any) => ['0/e', '11/e', '13/e'].includes(getPumpIoState(row));
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const isPumpOffRow = (row: any) => ['0/f', '12/f', '10/f'].includes(getPumpIoState(row));
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const getMediaId = (row: any) => {
-    const media = row?.trailer_id_code ?? row?.trailer_id;
-    const value = String(media || '').replace(/"/g, '').trim();
-    return value && value !== '0' ? value : '';
-};
-
 const enrichWlnData = (data: WlnRecord[]) => {
     const chronological = [...data].sort((a, b) => a.timestamp - b.timestamp);
     let lastPumpOnTs = 0;
