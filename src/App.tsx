@@ -1,9 +1,12 @@
 import { useState } from 'react';
+// @ts-ignore
 import Papa from 'papaparse';
 import ExcelJS from 'exceljs';
+// @ts-ignore
+import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { toast, Toaster } from 'sonner';
-import { ArrowLeft, Download, FileSpreadsheet, Settings, X, Fuel, Edit3, CheckCircle, AlertOctagon, Trash2, ZapOff, Calculator, CloudDownload, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Download, FileSpreadsheet, Settings, X, Fuel, Edit3, CheckCircle, AlertOctagon, Trash2, ZapOff, Calculator, CloudDownload, ChevronDown, FolderArchive } from 'lucide-react';
 
 import { processLogFile, processWlnFile, formatForExcel, parseTankFile, reconciliateData, runDiagnostics } from './utils/processors';
 import { ModeSelector } from './components/ModeSelector';
@@ -13,7 +16,6 @@ function App() {
     const [currentMode, setCurrentMode] = useState<string | null>(null);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const [processedData, setProcessedData] = useState<any[]>([]);
-
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const [diagnosticData, setDiagnosticData] = useState<any[]>([]);
 
@@ -29,11 +31,13 @@ function App() {
 
     const [templateFile, setTemplateFile] = useState<File | null>(null);
     const [needsManualMolde, setNeedsManualMolde] = useState(false);
-
     const [isPumpDropdownOpen, setIsPumpDropdownOpen] = useState(false);
 
+    const [expandedDays, setExpandedDays] = useState<Record<string, boolean>>({});
+    const [downloadTarget, setDownloadTarget] = useState<{ type: 'all' | 'single'; dateStr?: string; rows?: any[] } | null>(null);
+
     // ==========================================
-    // 🚀 MOTOR DE TRADUÇÃO AUTOMÁTICA (Cartão -> Placa)
+    // 🚀 MOTOR DE TRADUÇÃO AUTOMÁTICA
     // ==========================================
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const translateCardsToPlates = (data: any[], dictionary?: Record<string, string>) => {
@@ -44,7 +48,6 @@ function App() {
                 try { dict = JSON.parse(savedDict); } catch { /* ignore */ }
             }
         }
-
         if (!dict) return data;
 
         return data.map(item => {
@@ -70,13 +73,11 @@ function App() {
     const handleSyncATS = async () => {
         setIsSyncingAts(true);
         try {
-            // Chamamos o nosso PRÓPRIO servidor de forma segura
             const response = await fetch('/api/ats');
             if (!response.ok) throw new Error("Falha na API interna");
 
             const { bombas, cartoes } = await response.json();
 
-            // 🚀 FILTRO ESTRITO DA BOMBA
             const nomesBombas = bombas
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 .map((a: any) => a.name)
@@ -102,11 +103,9 @@ function App() {
 
             setAtsBombas([...new Set(nomesBombas)] as string[]);
             setAtsPlacas([...new Set(placasValidas)] as string[]);
-
             setProcessedData(prev => translateCardsToPlates(prev, dicionarioCartoes));
 
             toast.success(`Sincronizado! ${nomesBombas.length} Bombas e ${placasValidas.length} Placas carregadas.`);
-
         } catch (error) {
             console.error(error);
             toast.error("Erro ao sincronizar ATS. Verifique as configurações do servidor.");
@@ -124,6 +123,15 @@ function App() {
 
     const displayData = formatForExcel(processedData, currentMode || 'normal');
 
+    const groupedData: Record<string, any[]> = {};
+    displayData.forEach(item => {
+        const dataStrApenas = (item.dataStr?.split(' ')[0] || 'Sem_Data').replace(/,/g, '');
+        if (!groupedData[dataStrApenas]) {
+            groupedData[dataStrApenas] = [];
+        }
+        groupedData[dataStrApenas].push(item);
+    });
+
     const totalVolume = displayData.reduce((acc, row) => acc + (Number(row.volumeConciliado) || 0), 0);
     let totalEncerrante = 0;
     if (displayData.length > 0) {
@@ -138,11 +146,40 @@ function App() {
     const handleRowEdit = (uid: string, fieldName: string, value: string | number) => {
         setProcessedData(prev => prev.map(item => {
             if (item._uid === uid) {
+                const updatedItem = { ...item };
+
                 if (fieldName === 'Placa') {
-                    if (item['Veículo'] !== undefined) return { ...item, ['Veículo']: value };
-                    return { ...item, ['Veículo (Cartão)']: value };
+                    if (updatedItem['Veículo'] !== undefined) updatedItem['Veículo'] = value;
+                    else updatedItem['Veículo (Cartão)'] = value;
+                } else if (fieldName === 'Frentista') {
+                    updatedItem['Frentista'] = value;
+                } else if (fieldName === 'Odômetro') {
+                    updatedItem['Odômetro'] = value;
+                } else if (fieldName === 'Volume (L)') {
+                    updatedItem['Volume (L)'] = value;
+                    updatedItem.volumeConciliado = value;
+                } else if (fieldName === 'ID') {
+                    updatedItem['ID Operação'] = value;
+                    updatedItem['ID Gerado (Corrigido)'] = value;
+                } else if (fieldName === 'EncInicial' || fieldName === 'EncFinal') {
+                    // 🚀 A MÁGICA DA MATEMÁTICA AUTOMÁTICA
+                    const isIni = fieldName === 'EncInicial';
+                    const newIni = isIni ? Number(value) || 0 : (Number(updatedItem['Encerrante Inicial Bruto']) || Number(updatedItem.medidorInicial) || 0);
+                    const newFim = !isIni ? Number(value) || 0 : (Number(updatedItem['Encerrante Final Bruto']) || Number(updatedItem.medidorFinal) || 0);
+
+                    const novoVol = Number(((newFim - newIni) * 0.1).toFixed(2));
+
+                    updatedItem['Encerrante Inicial Bruto'] = newIni;
+                    updatedItem.medidorInicial = newIni;
+                    updatedItem['Encerrante Final Bruto'] = newFim;
+                    updatedItem.medidorFinal = newFim;
+                    updatedItem['Volume (L)'] = Math.max(0, novoVol);
+                    updatedItem.volumeConciliado = Math.max(0, novoVol);
+                } else {
+                    updatedItem[fieldName] = value;
                 }
-                return { ...item, [fieldName]: value };
+
+                return updatedItem;
             }
             return item;
         }));
@@ -153,62 +190,52 @@ function App() {
         toast.success("Abastecimento removido! Encerrantes recalculados.");
     };
 
-    const handleDownloadClick = () => {
+    const toggleDay = (day: string) => {
+        setExpandedDays(prev => ({ ...prev, [day]: !prev[day] }));
+    };
+
+    const handleDownloadAllClick = () => {
         if (processedData.length > 0) {
             setPumpName("");
             setFileNameClient("");
             setNeedsManualMolde(false);
             setTemplateFile(null);
+            setDownloadTarget({ type: 'all' });
             setIsModalOpen(true);
         }
     };
 
+    const handleDownloadSingleDayClick = (dateStr: string, rows: any[]) => {
+        setPumpName("");
+        setFileNameClient("");
+        setNeedsManualMolde(false);
+        setTemplateFile(null);
+        setDownloadTarget({ type: 'single', dateStr, rows });
+        setIsModalOpen(true);
+    };
+
     const confirmDownload = async () => {
-        if (!pumpName.trim() || !fileNameClient.trim()) {
-            toast.error("Preencha o Nome da Bomba e o Código do Cliente!");
+        if (!pumpName.trim() || !fileNameClient.trim() || !downloadTarget) {
+            toast.error("Preencha o Nome da Bomba e a Identificação do Arquivo!");
             return;
         }
 
+        setIsProcessing(true);
         try {
-            let arrayBuffer: ArrayBuffer;
+            let baseTemplateBuffer: ArrayBuffer;
 
             if (templateFile) {
-                arrayBuffer = await templateFile.arrayBuffer();
+                baseTemplateBuffer = await templateFile.arrayBuffer();
             } else {
-                const response = await fetch(`/Molde_Vazio.xlsx?v=${Date.now()}`);
+                const response = await fetch('/Molde_Vazio.xlsx');
                 if (!response.ok) {
                     setNeedsManualMolde(true);
-                    toast.warning("Molde automático não encontrado no servidor. Por favor, anexe o arquivo manualmente.");
+                    toast.error("Molde automático não encontrado no servidor. Anexe manualmente.");
+                    setIsProcessing(false);
                     return;
                 }
-                arrayBuffer = await response.arrayBuffer();
+                baseTemplateBuffer = await response.arrayBuffer();
             }
-
-            const workbook = new ExcelJS.Workbook();
-            await workbook.xlsx.load(arrayBuffer);
-
-            if (workbook.calcProperties) {
-                workbook.calcProperties.fullCalcOnLoad = true;
-            }
-
-            const ws = workbook.worksheets[0];
-
-            const d = displayData[0]?.originalTimestamp ? new Date(displayData[0].originalTimestamp) : new Date();
-            const dia = String(d.getDate()).padStart(2,'0');
-            const mes = String(d.getMonth()+1).padStart(2,'0');
-            const ano = d.getFullYear();
-
-            ws.name = `${dia}.${mes}.${ano}`;
-
-            let medidorSetup = 0;
-            if (currentMode === 'transcricao' || currentMode === 'comboio') {
-                medidorSetup = 0;
-            } else {
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const first = displayData.find((d: any) => d.medidorInicial > 0);
-                medidorSetup = first ? first.medidorInicial : 0;
-            }
-            ws.getCell('D2').value = medidorSetup;
 
             const getExcelTimeFraction = (timeStr: string | number | undefined | null) => {
                 if (!timeStr || timeStr === '-') return null;
@@ -218,9 +245,7 @@ function App() {
                 if (parts.length >= 2) {
                     const h = Number(parts[0]);
                     const m = Number(parts[1]);
-                    if (!isNaN(h) && !isNaN(m)) {
-                        return (h / 24) + (m / 1440);
-                    }
+                    return !isNaN(h) && !isNaN(m) ? (h / 24) + (m / 1440) : null;
                 }
                 return null;
             };
@@ -230,73 +255,112 @@ function App() {
                 if (val === null || val === undefined || val === '') return null;
                 if (typeof val === 'number') return val;
                 const strVal = String(val).trim();
-                if (strVal !== '' && !isNaN(Number(strVal))) {
-                    return Number(strVal);
-                }
-                return strVal;
+                return strVal !== '' && !isNaN(Number(strVal)) ? Number(strVal) : strVal;
             };
 
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            displayData.forEach((item: any, index: number) => {
-                const r = index + 3;
-                const row = ws.getRow(r);
+            const generateSingleDayBuffer = async (rowsForDay: any[], dateStr: string) => {
+                const workbook = new ExcelJS.Workbook();
+                await workbook.xlsx.load(baseTemplateBuffer.slice(0));
 
-                if (r > 3) {
-                    const baseRow = ws.getRow(3);
-                    for (let col = 1; col <= 13; col++) {
-                        row.getCell(col).style = baseRow.getCell(col).style;
-                    }
-                }
+                if (workbook.calcProperties) workbook.calcProperties.fullCalcOnLoad = true;
+                const ws = workbook.worksheets[0];
 
-                let medidorCol = 0;
+                const [d, m, a] = dateStr.split('/');
+                ws.name = `${d}.${m}.${a}`;
+
+                let medidorSetup = 0;
                 if (currentMode === 'transcricao' || currentMode === 'comboio') {
-                    medidorCol = Number(item.medidorFinal);
+                    medidorSetup = 0;
                 } else {
-                    medidorCol = Number(item.raw['Encerrante Final Bruto'] || 0);
+                    const first = rowsForDay.find((rowItem: any) => rowItem.medidorInicial > 0);
+                    medidorSetup = first ? first.medidorInicial : 0;
                 }
+                ws.getCell('D2').value = medidorSetup;
 
-                row.getCell(1).value = pumpName ? String(pumpName).trim() : null;
+                const chronologicalRows = [...rowsForDay].sort((x, y) => (x.originalTimestamp || 0) - (y.originalTimestamp || 0));
 
-                const startFraction = getExcelTimeFraction(item.horaInicio);
-                const cellInicio = row.getCell(2);
-                cellInicio.value = startFraction;
-                if (startFraction !== null) cellInicio.numFmt = 'hh:mm';
+                chronologicalRows.forEach((item: any, index: number) => {
+                    const r = index + 3;
+                    const row = ws.getRow(r);
 
-                const endFraction = getExcelTimeFraction(item.horaFim);
-                const cellFim = row.getCell(3);
-                cellFim.value = endFraction;
-                if (endFraction !== null) cellFim.numFmt = 'hh:mm';
+                    if (r > 3) {
+                        const baseRow = ws.getRow(3);
+                        for (let col = 1; col <= 13; col++) {
+                            row.getCell(col).style = baseRow.getCell(col).style;
+                        }
+                    }
 
-                row.getCell(4).value = medidorCol;
+                    const medidorCol = (currentMode === 'transcricao' || currentMode === 'comboio')
+                        ? Number(item.medidorFinal)
+                        : Number(item.raw['Encerrante Final Bruto'] || 0);
 
-                row.getCell(6).value = Number(item.medidorInicial);
-                row.getCell(7).value = Number(item.medidorFinal);
-                row.getCell(8).value = Number(item.volumeConciliado);
+                    row.getCell(1).value = pumpName ? String(pumpName).trim() : null;
 
-                row.getCell(9).value = cleanValue(item.placa);
+                    const startFraction = getExcelTimeFraction(item.horaInicio);
+                    const cellInicio = row.getCell(2);
+                    cellInicio.value = startFraction;
+                    if (startFraction !== null) cellInicio.numFmt = 'hh:mm';
 
-                const idVal = Number(item.id);
-                row.getCell(11).value = isNaN(idVal) ? cleanValue(item.id) : idVal;
+                    const endFraction = getExcelTimeFraction(item.horaFim);
+                    const cellFim = row.getCell(3);
+                    cellFim.value = endFraction;
+                    if (endFraction !== null) cellFim.numFmt = 'hh:mm';
 
-                row.getCell(12).value = cleanValue(item.frentista);
-                row.getCell(13).value = (item.odometro && item.odometro !== '-' && item.odometro !== '') ? Number(item.odometro) : null;
-            });
+                    row.getCell(4).value = medidorCol;
+                    row.getCell(6).value = Number(item.medidorInicial);
+                    row.getCell(7).value = Number(item.medidorFinal);
+                    row.getCell(8).value = Number(item.volumeConciliado);
+                    row.getCell(9).value = cleanValue(item.placa);
+
+                    const idVal = Number(item.id);
+                    row.getCell(11).value = isNaN(idVal) ? cleanValue(item.id) : idVal;
+                    row.getCell(12).value = cleanValue(item.frentista);
+                    row.getCell(13).value = (item.odometro && item.odometro !== '-' && item.odometro !== '') ? Number(item.odometro) : null;
+                });
+
+                return await workbook.xlsx.writeBuffer();
+            };
 
             const clientCode = fileNameClient.trim().replace(/\s+/g, '');
-            const nomeArquivo = `Planilha insercao de abastecimento_S10_${clientCode}_${dia}${mes}${ano}.xlsx`;
 
-            const buffer = await workbook.xlsx.writeBuffer();
+            if (downloadTarget.type === 'single') {
+                const targetDate = downloadTarget.dateStr!;
+                const targetRows = downloadTarget.rows!;
+                const [dia, mes, ano] = targetDate.split('/');
 
-            const excelMimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-            saveAs(new Blob([buffer], { type: excelMimeType }), nomeArquivo);
+                const buffer = await generateSingleDayBuffer(targetRows, targetDate);
+                const nomeArquivo = `Planilha insercao de abastecimento_S10_${clientCode}_${dia}${mes}${ano}.xlsx`;
 
-            toast.success(`Planilha gerada com Sucesso!`);
+                saveAs(new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), nomeArquivo);
+                toast.success(`Planilha do dia ${targetDate} gerada com sucesso!`);
+            } else {
+                const zip = new JSZip();
+                const arrayDeDias = Object.keys(groupedData);
+
+                for (const dateStr of arrayDeDias) {
+                    const [dia, mes, ano] = dateStr.split('/');
+                    const bufferPlanilha = await generateSingleDayBuffer(groupedData[dateStr], dateStr);
+                    zip.file(`Planilha insercao de abastecimento_S10_${clientCode}_${dia}${mes}${ano}.xlsx`, bufferPlanilha);
+                }
+
+                const zipBlob = await zip.generateAsync({ type: 'blob' });
+                const d = displayData[0]?.originalTimestamp ? new Date(displayData[0].originalTimestamp) : new Date();
+                const diaAt = String(d.getDate()).padStart(2,'0');
+                const mesAt = String(d.getMonth()+1).padStart(2,'0');
+                const anoAt = d.getFullYear();
+
+                const nomeZip = `Pacote_Abastecimentos_S10_${clientCode}_${diaAt}${mesAt}${anoAt}.zip`;
+                saveAs(zipBlob, nomeZip);
+                toast.success(`ZIP Gerado! ${arrayDeDias.length} planilhas diárias separadas prontas.`);
+            }
+
             setIsModalOpen(false);
-
         } catch (error) {
             console.error(error);
             setNeedsManualMolde(true);
-            toast.error("Falha de processamento. Anexe o molde manualmente.");
+            toast.error("Falha ao gerar planilhas. Tente novamente.");
+        } finally {
+            setIsProcessing(false);
         }
     };
 
@@ -309,11 +373,9 @@ function App() {
         try {
             const wlnRaw = await processWlnFile(wlnFile);
             const tankRaw = await parseTankFile(tankFile);
-
             if (tankRaw.length === 0) throw new Error("Não foi possível ler dados do arquivo de tanque.");
 
             const mergedData = reconciliateData(wlnRaw, tankRaw, currentMode!);
-
             const translatedData = translateCardsToPlates(mergedData);
             setProcessedData(translatedData);
 
@@ -365,11 +427,11 @@ function App() {
                         const cleanData = processLogFile(data, currentMode || 'normal', { startId: Number(startIdInput) });
                         const translatedData = translateCardsToPlates(cleanData);
                         setProcessedData(translatedData.length > 0 ? translatedData : data);
-                        toast.success(`${translatedData.length || data.length} registros processados e cruzados.`);
+                        toast.success(`${translatedData.length || data.length} registros processados.`);
                     }
                 }
-
             } else {
+                // Aqui podemos manter o Papa parse para arquivos CSV se for outro modo, mas o parser novo XLSX já está dentro do parseTankFile para o nível
                 Papa.parse(file, {
                     header: true, skipEmptyLines: true, delimiter: ";", transformHeader: h => h.trim(),
                     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -393,15 +455,15 @@ function App() {
     };
 
     return (
-        <div className="min-h-screen bg-gray-50 py-12 px-4 font-sans text-gray-800">
+        <div className="min-h-screen bg-gray-50 py-6 px-4 font-sans text-gray-800">
             <Toaster position="top-right" richColors />
 
             <datalist id="lista-placas">
                 {atsPlacas.map((placa, idx) => <option key={idx} value={placa} />)}
             </datalist>
 
-            <div className="max-w-5xl mx-auto">
-                <div className="text-center mb-10">
+            <div className="max-w-[96%] mx-auto">
+                <div className="text-center mb-8">
                     <h1 className="text-4xl font-extrabold text-gray-900 tracking-tight mb-2">Analisador de Telemetria</h1>
                     <p className="text-gray-500 text-lg">
                         {currentMode ? <span className="inline-flex items-center bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-medium">Modo: {currentMode.toUpperCase()}</span> : 'Selecione o tipo de análise'}
@@ -412,27 +474,51 @@ function App() {
                     <ModeSelector onSelectMode={setCurrentMode} />
                 ) : (
                     <div className="animate-fade-in-up">
-                        <button onClick={() => { setCurrentMode(null); setProcessedData([]); setDiagnosticData([]); setStartIdInput(""); setWlnFile(null); setTankFile(null); }} className="mb-6 flex items-center text-gray-500 hover:text-blue-600 font-medium">
-                            <ArrowLeft className="w-5 h-5 mr-2" /> Voltar
+                        <button onClick={() => {
+                            setCurrentMode(null);
+                            setProcessedData([]);
+                            setDiagnosticData([]);
+                            setStartIdInput("");
+                            setWlnFile(null);
+                            setTankFile(null);
+                            setExpandedDays({});
+                        }} className="mb-6 flex items-center text-gray-500 hover:text-blue-600 font-medium">
+                            <ArrowLeft className="w-5 h-5 mr-2"/> Voltar
                         </button>
 
                         <div className="bg-white rounded-3xl shadow-xl p-8 border border-gray-100 relative">
-
                             {currentMode === 'transcricao' || currentMode === 'comboio' ? (
                                 <div className="space-y-6">
                                     <div className={`p-4 ${currentMode === 'comboio' ? 'bg-teal-50 border-teal-200 text-teal-800' : 'bg-orange-50 border-orange-200 text-orange-800'} border rounded-xl text-sm mb-6`}>
-                                        <strong>{currentMode === 'comboio' ? 'Carregamento de Comboio:' : 'Conciliação Automática:'}</strong> {currentMode === 'comboio' ? 'Filtra e cruza APENAS os abastecimentos do Mangote.' : 'Envie o arquivo da Placa (WLN) e o do Nível (CSV) para cruzar os horários.'}
+                                        <strong>{currentMode === 'comboio' ? 'Carregamento de Comboio:' : 'Conciliação Automática:'}</strong> {currentMode === 'comboio' ? 'Filtra e cruza APENAS os abastecimentos do Mangote.' : 'Envie o arquivo da Placa (WLN) e o do Nível (CSV/XLSX) para cruzar os horários.'}
                                     </div>
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        <div className={`p-6 rounded-2xl border-2 border-dashed transition-all ${wlnFile ? 'border-green-400 bg-green-50' : 'border-gray-300 hover:border-blue-400'}`}>
-                                            <h3 className="font-bold text-gray-700 mb-2 flex items-center"><Fuel className="w-5 h-5 mr-2"/> 1. Telemetria (WLN)</h3>
-                                            {wlnFile ? <div className="text-green-700 font-medium truncate">{wlnFile.name}</div> : <FileUpload onFileSelect={handleFileSelect} />}
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        <div className="flex flex-col">
+                                            <h3 className="font-bold text-gray-700 mb-3 flex items-center"><Fuel className="w-5 h-5 mr-2 text-blue-500"/> 1. Telemetria (WLN)</h3>
+                                            {wlnFile ? (
+                                                <div className="h-48 rounded-2xl border-2 border-green-400 bg-green-50 flex flex-col items-center justify-center p-4 shadow-sm transition-all">
+                                                    <CheckCircle className="w-10 h-10 text-green-500 mb-3"/>
+                                                    <p className="text-green-800 font-bold truncate w-full text-center px-4">{wlnFile.name}</p>
+                                                </div>
+                                            ) : (
+                                                <FileUpload onFileSelect={handleFileSelect} acceptText="Suporta apenas arquivo .wln"/>
+                                            )}
                                         </div>
-                                        <div className={`p-6 rounded-2xl border-2 border-dashed transition-all ${tankFile ? 'border-green-400 bg-green-50' : 'border-gray-300 hover:border-blue-400'}`}>
-                                            <h3 className="font-bold text-gray-700 mb-2 flex items-center"><Settings className="w-5 h-5 mr-2"/> 2. Nível Tanque (CSV)</h3>
-                                            {tankFile ? <div className="text-green-700 font-medium truncate">{tankFile.name}</div> : <FileUpload onFileSelect={handleFileSelect} />}
+
+                                        <div className="flex flex-col">
+                                            <h3 className="font-bold text-gray-700 mb-3 flex items-center"><Settings className="w-5 h-5 mr-2 text-blue-500"/> 2. Nível Tanque (CSV/XLSX)</h3>
+                                            {tankFile ? (
+                                                <div className="h-48 rounded-2xl border-2 border-green-400 bg-green-50 flex flex-col items-center justify-center p-4 shadow-sm transition-all">
+                                                    <CheckCircle className="w-10 h-10 text-green-500 mb-3"/>
+                                                    <p className="text-green-800 font-bold truncate w-full text-center px-4">{tankFile.name}</p>
+                                                </div>
+                                            ) : (
+                                                <FileUpload onFileSelect={handleFileSelect} acceptText="Suporta arquivos .CSV ou .XLSX"/>
+                                            )}
                                         </div>
                                     </div>
+
                                     {wlnFile && tankFile && processedData.length === 0 && !isProcessing && (
                                         <button onClick={handleProcessConciliation} className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-blue-200 transition-all active:scale-95">Processar Conciliação</button>
                                     )}
@@ -441,20 +527,21 @@ function App() {
                                 <>
                                     {currentMode === 'energia' && (
                                         <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-xl text-red-800 text-sm flex items-center gap-3">
-                                            <ZapOff className="w-6 h-6 flex-shrink-0" />
+                                            <ZapOff className="w-6 h-6 flex-shrink-0"/>
                                             <span><strong>Recuperação de Queda de Energia:</strong> Restaura os litros perdidos garantindo a Malha Fechada do tanque usando o relógio eletrônico.</span>
                                         </div>
                                     )}
                                     {currentMode === 'travado' && (
                                         <div className="mb-8 p-6 bg-purple-50 rounded-2xl border border-purple-100 flex flex-col md:flex-row items-center gap-4">
-                                            <div className="w-full md:w-48"><label className="text-xs font-bold text-purple-800 uppercase ml-1">Último ID Válido</label><input type="number" className="w-full mt-1 px-4 py-3 rounded-xl border border-purple-200 outline-none" value={startIdInput} onChange={(e) => setStartIdInput(e.target.value)} /></div>
+                                            <div className="w-full md:w-48"><label className="text-xs font-bold text-purple-800 uppercase ml-1">Último ID Válido</label>
+                                                <input type="number" className="w-full mt-1 px-4 py-3 rounded-xl border border-purple-200 outline-none" value={startIdInput} onChange={(e) => setStartIdInput(e.target.value)}/></div>
                                         </div>
                                     )}
-                                    <FileUpload onFileSelect={handleFileSelect} />
+                                    <FileUpload onFileSelect={handleFileSelect} acceptText="Suporta apenas arquivo .wln" />
                                 </>
                             )}
 
-                            {isProcessing && (
+                            {isProcessing && !isModalOpen && (
                                 <div className="mt-8 mb-4 p-4 text-center font-bold text-blue-600 bg-blue-50 rounded-xl animate-pulse">
                                     Processando dados, por favor aguarde...
                                 </div>
@@ -525,13 +612,12 @@ function App() {
                                                                     <table className="w-full text-left bg-white whitespace-nowrap">
                                                                         <thead className="bg-slate-50 text-slate-500 text-xs">
                                                                         <tr>
-                                                                            <th className="px-4 py-2 font-semibold">Posição</th>
-                                                                            <th className="px-4 py-2 font-semibold">ID</th>
-                                                                            <th className="px-4 py-2 font-semibold">Início</th>
-                                                                            <th className="px-4 py-2 font-semibold">Enc. Inicial</th>
-                                                                            <th className="px-4 py-2 font-semibold">Enc. Final</th>
-                                                                            <th className="px-4 py-2 font-semibold">Volume</th>
-                                                                            <th className="px-4 py-2 font-semibold">Energia</th>
+                                                                            <th className="px-4 py-3">ID</th>
+                                                                            <th className="px-4 py-3">Horário</th>
+                                                                            <th className="px-4 py-3">Enc. Ini</th>
+                                                                            <th className="px-4 py-3">Enc. Fim</th>
+                                                                            <th className="px-4 py-3">Vol</th>
+                                                                            <th className="px-4 py-3">Tensão</th>
                                                                         </tr>
                                                                         </thead>
                                                                         <tbody>
@@ -582,25 +668,23 @@ function App() {
                             )}
 
                             {currentMode !== 'wln' && displayData.length > 0 && (
-                                <div className="mt-8 animate-fade-in-up">
+                                <div className="mt-8 animate-fade-in-up space-y-6">
 
                                     <div className="mb-4 grid grid-cols-1 md:grid-cols-3 gap-4">
                                         <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex items-center justify-between">
                                             <div>
-                                                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Soma dos Volumes</p>
+                                                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Soma de Volume Geral</p>
                                                 <p className="text-2xl font-black text-gray-800">{totalVolume.toFixed(1)} L</p>
                                             </div>
                                             <div className="p-3 bg-blue-50 text-blue-600 rounded-xl"><Fuel className="w-7 h-7"/></div>
                                         </div>
-
                                         <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex items-center justify-between">
                                             <div>
-                                                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1" title="Diferença entre o primeiro Encerrante Inicial e o último Encerrante Final da lista.">Saída pelo Medidor</p>
+                                                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Saída Total pelo Medidor</p>
                                                 <p className="text-2xl font-black text-gray-800">{totalEncerrante.toFixed(1)} L</p>
                                             </div>
                                             <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl"><Calculator className="w-7 h-7"/></div>
                                         </div>
-
                                         <div className={`p-5 rounded-2xl border shadow-sm flex items-center justify-between transition-colors ${hasDivergence ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
                                             <div>
                                                 <p className={`text-xs font-bold uppercase tracking-wider mb-1 ${hasDivergence ? 'text-red-500' : 'text-green-600'}`}>
@@ -620,180 +704,264 @@ function App() {
                                         <div className="flex items-center gap-3">
                                             <div className="p-2 bg-green-100 rounded-lg text-green-600"><FileSpreadsheet className="w-6 h-6" /></div>
                                             <div>
-                                                <p className="font-bold text-green-900">Pronto para Exportar!</p>
-                                                <p className="text-sm text-green-700">Edite os campos, delete falhas ou baixe o Excel.</p>
+                                                <p className="font-bold text-green-900">Logs Multi-Dias Detectados!</p>
+                                                <p className="text-sm text-green-700">Baixe os dias individualmente ou exporte o lote inteiro em um pacote ZIP.</p>
                                             </div>
                                         </div>
                                         <div className="flex gap-2 w-full sm:w-auto">
                                             <button
                                                 onClick={handleSyncATS}
                                                 disabled={isSyncingAts}
-                                                className="bg-indigo-100 text-indigo-700 hover:bg-indigo-200 px-4 py-3 rounded-xl font-bold flex items-center transition-all disabled:opacity-50"
+                                                className="bg-indigo-100 text-indigo-700 hover:bg-indigo-200 px-4 py-3 rounded-xl font-bold flex items-center transition-all"
                                             >
-                                                {isSyncingAts ? (
-                                                    <span className="animate-pulse">Sincronizando...</span>
-                                                ) : (
-                                                    <><CloudDownload className="w-5 h-5 mr-2" /> ATS Autocomplete</>
-                                                )}
+                                                {isSyncingAts ? <span className="animate-pulse">Sincronizando...</span> : <><CloudDownload className="w-5 h-5 mr-2" /> ATS Autocomplete</>}
                                             </button>
 
-                                            <button onClick={handleDownloadClick} className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl font-bold flex items-center shadow-lg transition-all active:scale-95">
-                                                <Download className="w-5 h-5 mr-2" /> Baixar Excel
+                                            <button onClick={handleDownloadAllClick} className="bg-green-600 hover:bg-green-700 text-white px-5 py-3 rounded-xl font-bold flex items-center shadow-lg transition-all active:scale-95">
+                                                <FolderArchive className="w-5 h-5 mr-2" /> Baixar Todos os Dias (ZIP)
                                             </button>
                                         </div>
                                     </div>
 
-                                    <div className="overflow-auto border border-gray-200 rounded-xl shadow-sm max-h-[600px] w-full bg-white">
-                                        <table className="w-full text-sm text-left relative">
-                                            <thead className="bg-gray-100 text-gray-600 font-bold sticky top-0 z-10 shadow-sm">
-                                            <tr>
-                                                <th className="px-4 py-3 whitespace-nowrap">Data</th>
-                                                <th className="px-4 py-3 whitespace-nowrap">Início</th>
-                                                <th className="px-4 py-3 whitespace-nowrap">Fim</th>
-                                                <th className="px-4 py-3 whitespace-nowrap">ID</th>
-                                                <th className="px-4 py-3 whitespace-nowrap text-blue-600 flex items-center gap-1"><Edit3 className="w-4 h-4"/> Placa</th>
-                                                <th className="px-4 py-3 whitespace-nowrap text-blue-600"><Edit3 className="w-4 h-4 inline mr-1"/> Vol (L)</th>
-                                                <th className="px-4 py-3 whitespace-nowrap text-gray-400">Enc. Inicial</th>
-                                                <th className="px-4 py-3 whitespace-nowrap text-gray-400">Enc. Final</th>
-                                                <th className="px-4 py-3 whitespace-nowrap text-center">Ações</th>
-                                            </tr>
-                                            </thead>
-                                            <tbody>
-                                            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                                            {displayData.map((row: any) => (
-                                                <tr key={row._uid} className="border-t border-gray-100 hover:bg-gray-50 transition-colors">
-                                                    <td className="px-4 py-3 whitespace-nowrap font-bold text-gray-800">{row.dataStr?.split(' ')[0] || '-'}</td>
-                                                    <td className="px-4 py-3 whitespace-nowrap font-medium text-gray-700">{row.horaInicio}</td>
-                                                    <td className="px-4 py-3 whitespace-nowrap font-medium text-gray-700">{row.horaFim}</td>
-                                                    <td className="px-4 py-3 whitespace-nowrap font-mono">{row.id}</td>
-                                                    <td className="px-4 py-2">
-                                                        <input
-                                                            list="lista-placas"
-                                                            type="text" placeholder="EX: ABC1234"
-                                                            className="border border-blue-200 rounded-lg px-3 py-1.5 w-28 focus:ring-2 focus:ring-blue-500 outline-none uppercase font-bold text-gray-700 bg-white shadow-sm"
-                                                            value={row.placa}
-                                                            onChange={(e) => handleRowEdit(row._uid, 'Placa', e.target.value.toUpperCase())}
-                                                        />
-                                                    </td>
-                                                    <td className="px-4 py-2">
-                                                        <input
-                                                            type="number"
-                                                            className="border border-blue-200 rounded-lg px-3 py-1.5 w-24 focus:ring-2 focus:ring-blue-500 outline-none font-bold text-gray-700 bg-white shadow-sm"
-                                                            value={row.volumeConciliado}
-                                                            onChange={(e) => handleRowEdit(row._uid, 'Volume (L)', Number(e.target.value))}
-                                                        />
-                                                    </td>
-                                                    <td className="px-4 py-3 whitespace-nowrap text-gray-500 font-mono">{row.medidorInicial}</td>
-                                                    <td className="px-4 py-3 whitespace-nowrap text-gray-500 font-mono">{row.medidorFinal}</td>
-                                                    <td className="px-4 py-3 whitespace-nowrap text-center">
+                                    {Object.keys(groupedData).sort((x, y) => y.localeCompare(x)).map((dateStr) => {
+                                        const rowsForDay = groupedData[dateStr];
+                                        const isExpanded = !!expandedDays[dateStr];
+                                        const volumeDoDia = rowsForDay.reduce((acc, r) => acc + (Number(r.volumeConciliado) || 0), 0);
+
+                                        return (
+                                            <div key={dateStr} className="border border-gray-200 rounded-2xl shadow-sm bg-white overflow-hidden transition-all">
+
+                                                <div
+                                                    onClick={() => toggleDay(dateStr)}
+                                                    className="bg-gray-50/70 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 cursor-pointer hover:bg-gray-100/80 transition-colors border-b border-gray-100"
+                                                >
+                                                    <div className="flex items-center gap-3">
+                                                        <ChevronDown className={`w-5 h-5 text-gray-500 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`} />
+                                                        <div>
+                                                            <h3 className="font-extrabold text-lg text-gray-800">📅 Dia {dateStr}</h3>
+                                                            <p className="text-xs text-gray-500 font-medium mt-0.5">
+                                                                {rowsForDay.length} abastecimentos localizados • Vol. Diário: <span className="text-blue-600 font-bold">{volumeDoDia.toFixed(1)} L</span>
+                                                            </p>
+                                                        </div>
+                                                    </div>
+
+                                                    <div onClick={(e) => e.stopPropagation()} className="w-full sm:w-auto">
                                                         <button
-                                                            onClick={() => handleDeleteRow(row._uid)}
-                                                            className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                                                            title="Remover linha e recalcular"
+                                                            onClick={() => handleDownloadSingleDayClick(dateStr, rowsForDay)}
+                                                            className="w-full sm:w-auto bg-white hover:bg-gray-50 text-gray-700 border border-gray-300 px-4 py-2 rounded-xl text-xs font-bold flex items-center justify-center shadow-sm"
                                                         >
-                                                            <Trash2 className="w-5 h-5" />
+                                                            <Download className="w-4 h-4 mr-1.5 text-gray-500" /> Baixar Apenas este Dia
                                                         </button>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            )}
+                                                    </div>
+                                                </div>
 
-                            {isModalOpen && (
-                                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-                                    <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-100">
-                                        <div className="flex justify-between items-center mb-6">
-                                            <h3 className="text-xl font-bold text-gray-800">Informações da Base</h3>
-                                            <button onClick={() => setIsModalOpen(false)} className="p-1 hover:bg-gray-100 rounded-full text-gray-500"><X className="w-6 h-6" /></button>
-                                        </div>
+                                                {isExpanded && (
+                                                    <div className="overflow-auto max-h-[600px] w-full bg-white animate-in fade-in duration-200">
+                                                        <table className="w-full text-sm text-left relative">
+                                                            <thead className="bg-gray-50 text-gray-500 font-bold sticky top-0 z-10 shadow-xs border-b border-gray-100">
+                                                            <tr>
+                                                                <th className="px-4 py-3 whitespace-nowrap">Data</th>
+                                                                <th className="px-4 py-3 whitespace-nowrap">Início</th>
+                                                                <th className="px-4 py-3 whitespace-nowrap">Fim</th>
+                                                                <th className="px-4 py-3 whitespace-nowrap text-blue-600 flex items-center gap-1"><Edit3 className="w-4 h-4"/> ID</th>
+                                                                <th className="px-4 py-3 whitespace-nowrap text-blue-600"><Edit3 className="w-4 h-4 inline mr-1"/> Placa</th>
+                                                                <th className="px-4 py-3 whitespace-nowrap text-blue-600"><Edit3 className="w-4 h-4 inline mr-1"/> Frentista</th>
+                                                                {/* 🚀 CABEÇALHO DO ODÔMETRO */}
+                                                                <th className="px-4 py-3 whitespace-nowrap text-blue-600"><Edit3 className="w-4 h-4 inline mr-1"/> Odom.</th>
+                                                                <th className="px-4 py-3 whitespace-nowrap text-blue-600"><Edit3 className="w-4 h-4 inline mr-1"/> Vol (L)</th>
+                                                                <th className="px-4 py-3 whitespace-nowrap text-blue-600"><Edit3 className="w-4 h-4 inline mr-1"/> Enc. Ini</th>
+                                                                <th className="px-4 py-3 whitespace-nowrap text-blue-600"><Edit3 className="w-4 h-4 inline mr-1"/> Enc. Fim</th>
+                                                                <th className="px-4 py-3 whitespace-nowrap text-center">Ações</th>
+                                                            </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                            {rowsForDay.map((row: any) => (
+                                                                <tr key={row._uid} className="border-t border-gray-100 hover:bg-gray-50/50 transition-colors">
+                                                                    <td className="px-4 py-3 whitespace-nowrap font-bold text-gray-800">{row.dataStr?.split(' ')[0] || '-'}</td>
+                                                                    <td className="px-4 py-3 whitespace-nowrap font-medium text-gray-700">{row.horaInicio}</td>
+                                                                    <td className="px-4 py-3 whitespace-nowrap font-medium text-gray-700">{row.horaFim}</td>
 
-                                        {needsManualMolde && (
-                                            <div className={`mb-4 p-4 rounded-xl border transition-colors duration-300 ${templateFile ? 'bg-green-50 border-green-300' : 'bg-orange-50 border-orange-300'}`}>
-                                                <label className={`block text-sm font-bold mb-2 ${templateFile ? 'text-green-800' : 'text-orange-800'}`}>
-                                                    {templateFile ? '✅ Molde Anexado' : '⚠️ Anexar Molde'}
-                                                </label>
+                                                                    <td className="px-4 py-2">
+                                                                        <input
+                                                                            type="number"
+                                                                            className="border border-blue-200 rounded-lg px-2 py-1.5 w-24 focus:ring-2 focus:ring-blue-500 outline-none font-mono font-bold text-gray-700 bg-white shadow-sm"
+                                                                            value={row.id}
+                                                                            onChange={(e) => handleRowEdit(row._uid, 'ID', Number(e.target.value))}
+                                                                        />
+                                                                    </td>
+                                                                    <td className="px-4 py-2">
+                                                                        <input
+                                                                            list="lista-placas"
+                                                                            type="text" placeholder="EX: ABC1234"
+                                                                            className="border border-blue-200 rounded-lg px-3 py-1.5 w-28 focus:ring-2 focus:ring-blue-500 outline-none uppercase font-bold text-gray-700 bg-white shadow-sm"
+                                                                            value={row.placa}
+                                                                            onChange={(e) => handleRowEdit(row._uid, 'Placa', e.target.value.toUpperCase())}
+                                                                        />
+                                                                    </td>
+                                                                    <td className="px-4 py-2">
+                                                                        <input
+                                                                            type="text" placeholder="EX: 12345"
+                                                                            className="border border-blue-200 rounded-lg px-3 py-1.5 w-28 focus:ring-2 focus:ring-blue-500 outline-none uppercase font-bold text-gray-700 bg-white shadow-sm"
+                                                                            value={row.frentista}
+                                                                            onChange={(e) => handleRowEdit(row._uid, 'Frentista', e.target.value.toUpperCase())}
+                                                                        />
+                                                                    </td>
+                                                                    {/* 🚀 INPUT DO ODÔMETRO */}
+                                                                    <td className="px-4 py-2">
+                                                                        <input
+                                                                            type="number"
+                                                                            className="border border-blue-200 rounded-lg px-3 py-1.5 w-24 focus:ring-2 focus:ring-blue-500 outline-none font-bold text-gray-700 bg-white shadow-sm"
+                                                                            value={row.odometro !== '-' ? row.odometro : ''}
+                                                                            placeholder="-"
+                                                                            onChange={(e) => handleRowEdit(row._uid, 'Odômetro', e.target.value)}
+                                                                        />
+                                                                    </td>
+                                                                    <td className="px-4 py-2">
+                                                                        <input
+                                                                            type="number"
+                                                                            className="border border-blue-200 rounded-lg px-3 py-1.5 w-24 focus:ring-2 focus:ring-blue-500 outline-none font-bold text-gray-700 bg-white shadow-sm"
+                                                                            value={row.volumeConciliado}
+                                                                            onChange={(e) => handleRowEdit(row._uid, 'Volume (L)', Number(e.target.value))}
+                                                                        />
+                                                                    </td>
+                                                                    <td className="px-4 py-2">
+                                                                        <input
+                                                                            type="number"
+                                                                            className="border border-blue-200 rounded-lg px-2 py-1.5 w-28 focus:ring-2 focus:ring-blue-500 outline-none font-mono text-gray-500 bg-white shadow-sm"
+                                                                            value={row.medidorInicial}
+                                                                            onChange={(e) => handleRowEdit(row._uid, 'EncInicial', Number(e.target.value))}
+                                                                        />
+                                                                    </td>
+                                                                    <td className="px-4 py-2">
+                                                                        <input
+                                                                            type="number"
+                                                                            className="border border-blue-200 rounded-lg px-2 py-1.5 w-28 focus:ring-2 focus:ring-blue-500 outline-none font-mono text-gray-500 bg-white shadow-sm"
+                                                                            value={row.medidorFinal}
+                                                                            onChange={(e) => handleRowEdit(row._uid, 'EncFinal', Number(e.target.value))}
+                                                                        />
+                                                                    </td>
 
-                                                {!templateFile ? (
-                                                    <input
-                                                        type="file" accept=".xlsx"
-                                                        className="w-full text-sm text-orange-800 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-orange-600 file:text-white hover:file:bg-orange-700 outline-none cursor-pointer"
-                                                        onChange={(e) => {
-                                                            const file = e.target.files?.[0];
-                                                            if (file) setTemplateFile(file);
-                                                        }}
-                                                    />
-                                                ) : (
-                                                    <div className="flex items-center justify-between bg-white p-2 rounded-lg border border-green-200 shadow-sm animate-fade-in-up">
-                                                        <span className="text-sm font-medium text-green-700 truncate mr-2" title={templateFile.name}>{templateFile.name}</span>
-                                                        <button onClick={() => setTemplateFile(null)} className="text-xs px-3 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 font-bold transition-colors">Trocar</button>
+                                                                    <td className="px-4 py-3 whitespace-nowrap text-center">
+                                                                        <button
+                                                                            onClick={() => handleDeleteRow(row._uid)}
+                                                                            className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                                                            title="Remover linha e recalcular"
+                                                                        >
+                                                                            <Trash2 className="w-5 h-5" />
+                                                                        </button>
+                                                                    </td>
+                                                                </tr>
+                                                            ))}
+                                                            </tbody>
+                                                        </table>
                                                     </div>
                                                 )}
                                             </div>
-                                        )}
-
-                                        <div className="mb-4 relative">
-                                            <label className="block text-sm font-semibold text-gray-700 mb-2">Nome da Bomba</label>
-                                            <div className="relative">
-                                                <input
-                                                    type="text"
-                                                    placeholder="Pesquise a bomba no ATS..."
-                                                    className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 outline-none pr-10"
-                                                    value={pumpName}
-                                                    onChange={(e) => setPumpName(e.target.value)}
-                                                    onFocus={() => setIsPumpDropdownOpen(true)}
-                                                    onBlur={() => setTimeout(() => setIsPumpDropdownOpen(false), 200)}
-                                                />
-                                                <div className="absolute right-3 top-3.5 text-gray-400">
-                                                    <ChevronDown className="w-5 h-5" />
-                                                </div>
-                                            </div>
-
-                                            {isPumpDropdownOpen && (
-                                                <div className="absolute z-50 w-full mt-2 bg-white rounded-xl shadow-2xl border border-gray-100 max-h-56 overflow-y-auto animate-in fade-in slide-in-from-top-2">
-                                                    {atsBombas.length > 0 ? (
-                                                        atsBombas
-                                                            .filter(b => b.toLowerCase().includes(pumpName.toLowerCase()))
-                                                            .map((bomba, idx) => (
-                                                                <div
-                                                                    key={idx}
-                                                                    className="px-4 py-3 hover:bg-blue-50 cursor-pointer text-sm font-medium text-gray-700 border-b border-gray-50 last:border-0 transition-colors"
-                                                                    onClick={() => {
-                                                                        setPumpName(bomba);
-                                                                        setIsPumpDropdownOpen(false);
-                                                                    }}
-                                                                >
-                                                                    <Fuel className="w-4 h-4 inline mr-2 text-blue-500" />
-                                                                    {bomba}
-                                                                </div>
-                                                            ))
-                                                    ) : (
-                                                        <div className="px-4 py-4 text-sm text-gray-500 text-center">
-                                                            A lista está vazia. Clique no botão <b>"ATS Autocomplete"</b> fora deste menu para buscar os dados.
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            )}
-                                        </div>
-
-                                        <div className="mb-8">
-                                            <label className="block text-sm font-semibold text-gray-700 mb-2">Código do Cliente</label>
-                                            <input type="text" placeholder="Ex: roca644" className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 outline-none" value={fileNameClient} onChange={(e) => setFileNameClient(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && confirmDownload()} />
-                                        </div>
-
-                                        <div className="flex gap-3">
-                                            <button onClick={() => setIsModalOpen(false)} className="flex-1 px-4 py-3 rounded-xl font-semibold text-gray-600 hover:bg-gray-100 transition-colors">Cancelar</button>
-                                            <button onClick={confirmDownload} className="flex-1 px-4 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-lg transition-transform active:scale-95">Gerar Arquivo</button>
-                                        </div>
-                                    </div>
+                                        );
+                                    })}
                                 </div>
                             )}
+
+
                         </div>
                     </div>
                 )}
             </div>
+            {isModalOpen && (
+                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md border border-gray-100">
+                        <div className="flex justify-between items-center mb-6">
+                            <h3 className="text-xl font-bold text-gray-800">
+                                {downloadTarget?.type === 'all' ? '📦 Exportar Lote Completo (ZIP)' : `📄 Exportar Dia ${downloadTarget?.dateStr}`}
+                            </h3>
+                            <button onClick={() => { setIsModalOpen(false); setDownloadTarget(null); }} className="p-1 hover:bg-gray-100 rounded-full text-gray-500"><X className="w-6 h-6" /></button>
+                        </div>
+
+                        {needsManualMolde && (
+                            <div className={`mb-4 p-4 rounded-xl border transition-colors duration-300 ${templateFile ? 'bg-green-50 border-green-300' : 'bg-orange-50 border-orange-300'}`}>
+                                <label className={`block text-sm font-bold mb-2 ${templateFile ? 'text-green-800' : 'text-orange-800'}`}>
+                                    {templateFile ? '✅ Molde Anexado' : '⚠️ Anexar Molde'}
+                                </label>
+                                {!templateFile ? (
+                                    <input
+                                        type="file" accept=".xlsx"
+                                        className="w-full text-sm text-orange-800 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-orange-600 file:text-white hover:file:bg-orange-700 outline-none cursor-pointer"
+                                        onChange={(e) => {
+                                            const file = e.target.files?.[0];
+                                            if (file) setTemplateFile(file);
+                                        }}
+                                    />
+                                ) : (
+                                    <div className="flex items-center justify-between bg-white p-2 rounded-lg border border-green-200 shadow-sm animate-fade-in-up">
+                                        <span className="text-sm font-medium text-green-700 truncate mr-2" title={templateFile.name}>{templateFile.name}</span>
+                                        <button onClick={() => setTemplateFile(null)} className="text-xs px-3 py-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 font-bold transition-colors">Trocar</button>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        <div className="mb-4 relative">
+                            <label className="block text-sm font-semibold text-gray-700 mb-2">Nome da Bomba</label>
+                            <div className="relative">
+                                <input
+                                    type="text"
+                                    placeholder="Pesquise a bomba no ATS..."
+                                    className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 outline-none pr-10"
+                                    value={pumpName}
+                                    onChange={(e) => setPumpName(e.target.value)}
+                                    onFocus={() => setIsPumpDropdownOpen(true)}
+                                    onBlur={() => setTimeout(() => setIsPumpDropdownOpen(false), 200)}
+                                />
+                                <div className="absolute right-3 top-3.5 text-gray-400">
+                                    <ChevronDown className="w-5 h-5" />
+                                </div>
+                            </div>
+
+                            {isPumpDropdownOpen && (
+                                <div className="absolute z-50 w-full mt-2 bg-white rounded-xl shadow-2xl border border-gray-100 max-h-56 overflow-y-auto">
+                                    {atsBombas.length > 0 ? (
+                                        atsBombas
+                                            .filter(b => b.toLowerCase().includes(pumpName.toLowerCase()))
+                                            .map((bomba, idx) => (
+                                                <div
+                                                    key={idx}
+                                                    className="px-4 py-3 hover:bg-blue-50 cursor-pointer text-sm font-medium text-gray-700 border-b border-gray-50 last:border-0 transition-colors"
+                                                    onClick={() => {
+                                                        setPumpName(bomba);
+                                                        setIsPumpDropdownOpen(false);
+                                                    }}
+                                                >
+                                                    <Fuel className="w-4 h-4 inline mr-2 text-blue-500" />
+                                                    {bomba}
+                                                </div>
+                                            ))
+                                    ) : (
+                                        <div className="px-4 py-4 text-sm text-gray-500 text-center">
+                                            A lista está vazia. Sincronize com o ATS.
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="mb-8">
+                            <label className="block text-sm font-semibold text-gray-700 mb-2">Identificação do Arquivo</label>
+                            <input type="text" placeholder="Ex: roca644" className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 outline-none" value={fileNameClient} onChange={(e) => setFileNameClient(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && confirmDownload()} />
+                        </div>
+
+                        <div className="flex gap-3">
+                            <button onClick={() => { setIsModalOpen(false); setDownloadTarget(null); }} className="flex-1 px-4 py-3 rounded-xl font-semibold text-gray-600 hover:bg-gray-100 transition-colors">Cancelar</button>
+                            <button
+                                onClick={confirmDownload}
+                                disabled={isProcessing}
+                                className="flex-1 px-4 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-lg disabled:opacity-50"
+                            >
+                                {isProcessing ? 'Processando...' : 'Gerar Arquivo'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
