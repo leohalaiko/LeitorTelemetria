@@ -72,62 +72,101 @@ const parseDateString = (dateInput: any) => {
     return 0;
 };
 
-const calculateVolFromLevel = (startTime: number, endTime: number, tankData: any[]) => {
-    const validRows = tankData.filter(r => parseDateString(r['Hora'] || r['Date']) > 0);
-    if (validRows.length === 0) return 0;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const calculateVolFromLevel = (startTime: number, endTime: number, tankData: any[], nextStartTime: number = Infinity, rawWlnData: any[] = [], mode: string = 'normal') => {
 
-    const getLvl = (r: any) => {
-        const keys = Object.keys(r);
-        const targetKey = keys.find(k => k.toLowerCase().includes('estoque s10') || k.toLowerCase().includes('tanque 1 - s10')) || keys[1];
-        return Number(String(r[targetKey] || 0).replace(',', '.'));
+    // 1. TRADUTOR DE HORA DO EXCEL (Resolve o bug do DD.MM.YYYY)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const parseExcelDate = (dateStr: any) => {
+        if (!dateStr || dateStr === '-') return 0;
+        const s = String(dateStr).trim();
+        // Procura o padrão "19.05.2026 23:36:58"
+        const match = s.match(/^(\d{2})[./-](\d{2})[./-](\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
+        if (match) {
+            // Converte para milissegundos reais (Mês no JS começa em 0, por isso -1)
+            return new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]), Number(match[4]), Number(match[5]), Number(match[6])).getTime();
+        }
+        return new Date(s).getTime() || 0;
     };
 
-    // 1. Acha o Nível de Início (A linha mais próxima da hora de início)
+    // 2. Extração segura do nível
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const getLvl = (r: any) => {
+        const keys = Object.keys(r);
+        const targetKey = keys.find(k => k.toLowerCase().includes('estoque s10') || k.toLowerCase().includes('tanque 1 - s10') || k.toLowerCase().includes('estoque')) || keys[1];
+        const val = Number(String(r[targetKey] || 0).replace(',', '.'));
+        return isNaN(val) ? 0 : val;
+    };
+
+    const validRows = tankData.filter(r => parseExcelDate(r['Hora'] || r['Date']) > 0 && getLvl(r) > 0);
+    if (validRows.length === 0) return 0;
+
+    // 3. Acha o Nível de Início
     let startRow = validRows[0];
     let minStartDiff = Infinity;
     validRows.forEach(row => {
-        const rowTime = parseDateString(row['Hora'] || row['Date']);
+        const rowTime = parseExcelDate(row['Hora'] || row['Date']);
         const startDiff = Math.abs(rowTime - startTime);
         if (startDiff <= minStartDiff) {
             minStartDiff = startDiff;
             startRow = row;
         }
     });
+
     const levelStart = getLvl(startRow);
+    let lowestLvl = levelStart;
 
-    // 2. 🚀 A LÓGICA DE ESTABILIZAÇÃO (Resolve a Inércia de 25L)
-    // Olha da hora do desligamento até 3 minutos para frente para capturar a descida residual.
-    let levelEnd = levelStart;
-    const windowEnd = endTime + 180000; // +3 minutos (margem de estabilização de mensagens)
+    // 4. O RELÓGIO DE PACIÊNCIA (Agora o tempo real funciona!)
+    // 8 minutos (480.000ms) se for sem_encerrante, senão 3 minutos (180.000ms)
+    const patienceTime = (mode === 'sem_encerrante') ? 480000 : 180000;
+    const maxWatchTime = endTime + patienceTime;
 
-    let fallbackRow = startRow;
-    let minEndDiffFallback = Infinity;
+    const rowsAfter = validRows.filter(r => parseExcelDate(r['Hora'] || r['Date']) >= endTime);
+    rowsAfter.sort((a, b) => parseExcelDate(a['Hora'] || a['Date']) - parseExcelDate(b['Hora'] || b['Date']));
 
-    validRows.forEach(row => {
-        const rowTime = parseDateString(row['Hora'] || row['Date']);
+    // 5. O LAÇO DA VERDADE
+    for (let i = 0; i < rowsAfter.length; i++) {
+        const rowTime = parseExcelDate(rowsAfter[i]['Hora'] || rowsAfter[i]['Date']);
+        const currentLvl = getLvl(rowsAfter[i]);
 
-        // Se o registro ocorreu no intervalo da estabilização e o nível desceu, nós rastreamos!
-        if (rowTime >= endTime - 30000 && rowTime <= windowEnd) {
-            const currentLvl = getLvl(row);
-            if (currentLvl < levelEnd) {
-                levelEnd = currentLvl; // Atualiza para o Fundo do Poço
+        // 🚨 GATILHO TEMPORAL: Bateu os 8 minutos da linha do Excel? Freia!
+        if (rowTime > maxWatchTime) {
+            break;
+        }
+
+        // 🚨 RADAR LÓGICO: O próximo abastecimento oficial começou
+        if (rowTime >= nextStartTime) {
+            break;
+        }
+
+        // 🚨 RADAR FÍSICO (AGORA COM CARÊNCIA DE 60 SEGUNDOS)
+        if (mode === 'sem_encerrante' && rawWlnData && rawWlnData.length > 0) {
+
+            // Dá 1 minuto para a placa "respirar" e desligar o relé fisicamente
+            const gracePeriodEnd = endTime + 60000;
+
+            const pumpTurnedOn = rawWlnData.some(wlnRow => {
+                const wlnTime = String(wlnRow.timestamp || wlnRow.upar3).length > 11 ? Number(wlnRow.timestamp || wlnRow.upar3) : Number(wlnRow.timestamp || wlnRow.upar3) * 1000;
+                const io = String(wlnRow['i/o'] || wlnRow.io || '').trim().toLowerCase();
+                const isPumpOn = ['0/e', '11/e', '13/e'].includes(io);
+
+                // O Radar só dispara se a bomba estiver ligada DEPOIS da carência
+                return isPumpOn && wlnTime > gracePeriodEnd && wlnTime <= rowTime;
+            });
+
+            if (pumpTurnedOn) {
+                break;
             }
         }
 
-        // Fallback caso não existam dados na janela de 3 min
-        const endDiff = Math.abs(rowTime - endTime);
-        if (endDiff < minEndDiffFallback) {
-            minEndDiffFallback = endDiff;
-            fallbackRow = row;
+        // 🚀 O VERDADEIRO FUNDO DO POÇO
+        if (currentLvl < lowestLvl) {
+            lowestLvl = currentLvl;
         }
-    });
-
-    // Se o nível cravou igual, pega o valor mais próximo do desligamento real
-    if (levelEnd === levelStart) {
-        levelEnd = Math.min(levelEnd, getLvl(fallbackRow));
     }
 
-    return Math.max(0, Number((levelStart - levelEnd).toFixed(2)));
+    if (lowestLvl >= levelStart) return 0;
+    return Math.max(0, Number((levelStart - lowestLvl).toFixed(2)));
 };
 
 void calculateVolFromLevel;
@@ -291,12 +330,18 @@ export const reconciliateData = (wlnData: any[], tankData: any[], mode: string =
             }
         });
 
-        // PASSO 3: Organiza Cronologicamente e Aplica Nível de Estabilização
+        // 🚀 A CORREÇÃO MESTRA: Organiza a linha do tempo ANTES de calcular os volumes!
         mergedEvents.sort((a, b) => a.startTs - b.startTs);
 
-        mergedEvents.forEach(evt => {
+        // 🚀 O LAÇO MANTÉM-SE EXATAMENTE IGUAL
+        mergedEvents.forEach((evt, index, array) => {
             currentIdCounter++;
-            const vol = calculateVolFromLevel(evt.startTs, evt.endTs, tankData); // 🚀 O Nível Correto Calculado!
+
+            // Agora sim, o array[index + 1] será realmente o abastecimento do futuro!
+            const nextStartTime = (index + 1 < array.length) ? array[index + 1].startTs : Infinity;
+
+            // Passamos a artilharia pesada: nextStartTime, wlnData (para o Radar Físico) e o mode
+            const vol = calculateVolFromLevel(evt.startTs, evt.endTs, tankData, nextStartTime, wlnData, mode);
 
             if (evt.isGhost) {
                 results.push({
@@ -827,26 +872,28 @@ const processEnergyRecovery = (data: any[]) => {
                 endRow = row;
             }
 
-            if (!isEnd) {
-                const msgsSinceChange = i - currentSupply.lastCanChangeIndex;
-                if (msgsSinceChange >= 15 && currentSupply.maxCan > currentSupply.encIni) {
+            // REGRA 1: Parada Física (5 Mensagens)
+            const msgsSinceChange = i - currentSupply.lastCanChangeIndex;
 
-                    let pendingTrama = false;
-                    for (let look = 1; look <= 30; look++) {
-                        if (i + look < data.length) {
-                            const lookId = Number(data[i + look].upar0) || 0;
-                            if (lookId > 0 && (currentSupply.id === 0 || lookId === currentSupply.id)) {
-                                pendingTrama = true;
-                                break;
-                            }
+            if (!isEnd && msgsSinceChange >= 5 && currentSupply.maxCan > currentSupply.encIni) {
+
+                // REGRA 2: Verificação de TRAMA (15 Mensagens)
+                let pendingTrama = false;
+                for (let look = 1; look <= 15; look++) {
+                    if (i + look < data.length) {
+                        const lookId = Number(data[i + look].upar0) || 0;
+                        if (lookId > 0 && (currentSupply.id === 0 || lookId === currentSupply.id)) {
+                            pendingTrama = true;
+                            break;
                         }
                     }
+                }
 
-                    if (!pendingTrama) {
-                        isEnd = true;
-                        encFim = currentSupply.maxCan;
-                        endRow = data[currentSupply.lastCanChangeIndex];
-                    }
+                // Se não tem trama no horizonte de 15 msgs, é Fantasma! Reconstrói com dados brutos.
+                if (!pendingTrama) {
+                    isEnd = true;
+                    encFim = currentSupply.maxCan;
+                    endRow = data[currentSupply.lastCanChangeIndex];
                 }
             }
 

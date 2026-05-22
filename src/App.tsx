@@ -149,20 +149,22 @@ function App() {
                 const updatedItem = { ...item };
 
                 if (fieldName === 'Placa') {
-                    if (updatedItem['Veículo'] !== undefined) updatedItem['Veículo'] = value;
-                    else updatedItem['Veículo (Cartão)'] = value;
+                    // Corrigido: Sem acento para casar com o formatForExcel
+                    updatedItem['Veiculo'] = value;
+                    updatedItem['Veiculo (Cartão)'] = value;
                 } else if (fieldName === 'Frentista') {
                     updatedItem['Frentista'] = value;
                 } else if (fieldName === 'Odômetro') {
-                    updatedItem['Odômetro'] = value;
+                    // Corrigido: Sem acento
+                    updatedItem['Odometro'] = value;
                 } else if (fieldName === 'Volume (L)') {
                     updatedItem['Volume (L)'] = value;
                     updatedItem.volumeConciliado = value;
                 } else if (fieldName === 'ID') {
-                    updatedItem['ID Operação'] = value;
+                    // Corrigido: Sem acento
+                    updatedItem['ID Operacao'] = value;
                     updatedItem['ID Gerado (Corrigido)'] = value;
                 } else if (fieldName === 'EncInicial' || fieldName === 'EncFinal') {
-                    // 🚀 A MÁGICA DA MATEMÁTICA AUTOMÁTICA
                     const isIni = fieldName === 'EncInicial';
                     const newIni = isIni ? Number(value) || 0 : (Number(updatedItem['Encerrante Inicial Bruto']) || Number(updatedItem.medidorInicial) || 0);
                     const newFim = !isIni ? Number(value) || 0 : (Number(updatedItem['Encerrante Final Bruto']) || Number(updatedItem.medidorFinal) || 0);
