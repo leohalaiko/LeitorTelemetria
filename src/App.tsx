@@ -51,12 +51,12 @@ function App() {
         if (!dict) return data;
 
         return data.map(item => {
-            const cartao = String(item['Veículo (Cartão)'] || item['Veículo'] || '').trim();
+            const cartao = String(item['Veiculo (Cartão)'] || item['Veiculo'] || '').trim();
             if (cartao && dict![cartao]) {
                 return {
                     ...item,
-                    'Veículo (Cartão)': dict![cartao],
-                    'Veículo': dict![cartao]
+                    'Veiculo (Cartão)': dict![cartao],
+                    'Veiculo': dict![cartao]
                 };
             }
             return item;
@@ -87,14 +87,19 @@ function App() {
                     return String(nome).toLowerCase().includes('bomba');
                 });
 
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const placasValidas = cartoes.filter((c: any) => c.asset && c.asset.name).map((c: any) => c.asset.name);
-
+            // 🚀 AQUI É ONDE O DICIONÁRIO É CONSTRUÍDO COM A ESTRUTURA NOVA (asset.name)
             const dicionarioCartoes: Record<string, string> = {};
+            const placasValidas: string[] = [];
+
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             cartoes.forEach((c: any) => {
-                if (c.externalIdentifier && c.asset?.name) {
-                    dicionarioCartoes[String(c.externalIdentifier)] = c.asset.name;
+                const numeroCartao = c.externalIdentifier || c.number;
+                // 🚀 Optional Chaining para pegar do formato novo ou antigo
+                const nomePlaca = c.asset?.name || c.name;
+
+                if (numeroCartao && nomePlaca) {
+                    dicionarioCartoes[String(numeroCartao)] = nomePlaca;
+                    placasValidas.push(nomePlaca);
                 }
             });
 
